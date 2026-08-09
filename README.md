@@ -1,85 +1,111 @@
 # WiFi-ZERO
 
-Vigilancia continua de **tu red local** desde **Android/Termux sin root** (probado en Redmi
-Note 11, Android 11). Rastrea todo lo que aparece y desaparece en tu Wi‑Fi, lo registra en una
-SQLite y lo muestra en un panel web local con alertas.
+Vigilancia continua de **tu red local** desde **Android/Termux sin root**
+(probado en Redmi Note 11, Android 11) — v2.
 
-> **Ámbito y ética.** Este entorno es para **tu propia red**. En Android **sin root** no existen
-> modo monitor, deauth ni escucha del tráfico de terceros: el kernel lo bloquea. Lo que hace
-> este proyecto dentro de lo legal y sin privilegios: inventario de tu red (ARP vecino + TCP),
-> análisis de las redes Wi‑Fi que tu teléfono alcanza (API de Android) y seguimiento histórico
-> de cambios.
+Rastrea dispositivos, redes, señales y cambios de seguridad en tu Wi‑Fi,
+almacena todo en SQLite (migrado) y publica un panel web local con **login**,
+**eventos en vivo** (SSE), análisis de riesgo y gráficos. Todo **100 % Python
+stdlib** (cero `pip install`).
+
+> **Ámbito (imprescindible):** este proyecto es para **tu propia red** o con
+> autorización. En Android sin root **no existe** monitor mode, deauth ni
+> lectura del tráfico ajeno; hacemos exactamente lo permitido y útil para
+> proteger tu hogar. Ver `docs/ETHICS.md`.
 
 ---
 
-## Qué rastrea
+## Qué aporta en una línea
+Sin root, con solo capacidades de usuario, wifi-zero te da: inventario de
+hosts (ARP vecino + fabricante OUI), puertos/servicios, análisis Wi‑Fi
+profundo (cifrado, canal, SSID oculto, BSSID duplicado), motor de reglas
+anti‑intrusión con cooldown, scoring de riesgo por host, whitelist/watchlist
+y un panel web seguro con token.
 
-| Módulo | Técnica | Información |
-|---|---|---|
-| **Inventario de hosts** | Tabla ARP del kernel (`ip neigh`) + barrido TCP connect | IP, MAC, fabricante (OUI), estado, primera/última vista |
-| **Servicios** | Probe TCP por host | puertos abiertos y proto |
-| **Análisis Wi‑Fi** | `termux-wifi-scaninfo` (Termux:API) | SSID, BSSID, canal, frecuencia, RSSI, fabricante |
-| **Detección** | Diff en cada ciclo aé | host nuevo (intruso), cambio de MAC (spoofing), host perdido, AP nuevo (rogue), puerto nuevo |
-| **Alertas** | `termux-notification` | push en el móvil desde nivel warn |
-| **Panel web** | HTTP de la stdlib | dashboard con host/AP/eventos en vivo + export CSV |
-
-## Requisitos
-
-```
-pkg install nmap python3 termux-api
-```
-
-Concede a Termux el permiso de redes/acceso aproximado/exacto que pide Android la primera vez
-que uses `termux-wifi-scaninfo` (o el panel mostrará APs vacíos).
-
-## Uso
+## Rápido — arrancar
 
 ```sh
-./start_all.sh     # arranca monitor + api + escaneo inicial
-./checks.sh    # healthcheck; "TODO OK" = sano
-./stop_all.sh      # detén todo
+cd ~/wifi-zero
+python3 scripts/set_password.py     # define la contraseña del panel
+./start_all.sh                      # monitor + panel + portada
+./checks.sh                         # TODO OK = sano
 ```
 
-Panel en un navegador del mismo móvil (o de una máquina de la misma LAN):
+Panel: `http://127.0.0.1:8788`  (usuario por defecto `admin`, la que fijes).
 
-```
-http://127.0.0.1:8788
-```
+## Qué rastrea (v2)
 
-- `GET  /api/stats`, `/api/hosts`, `/api/aps`, `/api/events?since=N`, `/api/topology`
-- `POST /api/scan` → escanear bajo demanda
-- `GET  /hosts.csv` → export
-
-## Configuración (variables)
-
-| Variable | Defecto | Función |
+| Módulo | Técnica | Salida |
 |---|---|---|
-| `WZ_LAN_INTERVAL` | 60 | segundos entre escaneos LAN |
-| `WZ_WIFI_INTERVAL` | 120 | segundos entre análisis Wi‑Fi |
-| `WZ_NOTIFY_MIN` | `warn` | nivel mínimo de alertas (`info`/`warn`/`crit`) |
-| `WZ_PORT` | 8788 | puerto del panel |
+| Hosts | ARP del kernel (`ip neigh`) + TCP connect | IP, MAC, fabricante (OUI), estado, 1ª/última |
+| Servicios | probe TCP + `nmap -sV` (opcional) | puerto, servicio, producto, versión |
+| Wi-Fi | Termux:API `scaninfo`/`connectioninfo` | cifrado (WPA2/WPA3/OPEN), canal, bandwidth, SSID oculto, dispositivo actual |
+| Sospechosos | motor de reglas (cooldown c/entidad) | host nuevo, spoof MAC, offline, AP new/rogue, downgrade cifrado, evil-twin, puerto nuevo |
+| Riesgo | scoring 0–100 + tier | cada host en el panel ordenado |
+| Historia | `hosts_history`/`signals` | uptime y señal por host/AP |
+
+## Panel (F4)
+
+- **Login** (scrypt, tokens HMAC, 30 min) — activo por defecto.
+- **Dashboard**: KPIs, tabla de hosts ordenable por riesgo, filtro de búsqueda,
+  solo críticos.
+- **detalle de host** (`/host.html?ip=…`): historia, puertos, eventos.
+- **APs**: canal, RSSI, cifrado, fabricante; clic → gráfico SVG de señal.
+- **Redes memorizadas** y **estación actual** (link_speed, network_id).
+- **Eventos en vivo** vía SSE (pestaña a pestaña se actualiza al instante).
+- **Export** CSV.
+
+## Configuración
+
+`config.json` (los valores por defecto bastan):
+
+```json
+{
+  "intervalos": { "lan": 60, "wifi": 120 },
+  "notify":     { "min_level": "warn", "channel": "wifi-zero" },
+  "panel":      { "port": 8788, "bind": "0.0.0.0", "auth": true, "user": "admin", "password": "<scrypt hash>" },
+  "battery":    { "eco_below": 35, "pause_below": 15 },
+  "scanner":    { "ports_scan": [...], "nse_broadcast": true, "service_versions": true },
+  "pushes":     { "enabled": false, "ntfy_url": "", "telegram_token": "", "telegram_chat": "" },
+  "watchlist":  []
+}
+```
+
+- Cambia la contraseña: `python3 scripts/set_password.py`
+- Push en otro dispositivo (nfty/Telegram): completa `pushes` y pon `enabled: true`.
+- Watchlist: pon `{ "mac": "..", "label": "Router" }` para que su caída salte crítica.
+
+## Makefile
+
+```sh
+make test      # unit tests (sin red)
+make check     # healthcheck del stack
+make run/stop
+make report    # reporte Markdown
+make backup
+```
 
 ## Estructura
 
 ```
 wifi-zero/
-├── scanner/          lan_scan.py · wifi_track.py
-├── core/             db.py · monitor.py · server.py
-├── panel/            index.html · app.js
-├── data/wifi.db      ·   logs/  ·   start.sh · stop.sh · checks.sh
+├── core/        config · db(+migraciones) · log · auth · rules ·
+│                threat · notify · monitor · server · report
+├── scanner/      lan_scan (ip neigh + nmap) · wifi_track (API)
+├── panel/        index.html · host.html · login.html · app.js · style.css
+├── scripts/      set_password.py · watchdog.sh · backup.sh
+├── tests/        test_wifi_zero.py
+├── config.json · Makefile · checks.sh · start_all.sh · stop_all.sh
+├── data/         wifi.db (gitignored) · reports/ · backups/
+└── docs/         ARCHITECTURE · RULES · SECURITY · ETHICS
 ```
 
-## Notas de seguridad
+## Dev
 
-- Todo usa solo **capacidades de usuario normal**: sin root, sin monitorado, sin tráfico ajeno.
-- La base de datos `data/wifi.db` vive en tu almacenamiento; valora cifrarla si te importa la
-  privacidad de los registros.
-- El servidor escucha en `0.0.0.0:8788`; para dejarlo solo-local cambia en `core/server.py` el
-  bind a `("127.0.0.1", PORT)`.
+- prueba sin red: `python3 -m unittest discover tests`
+- nuevos módulos: mira `docs/ARCHITECTURE.md`, añade migraciones a `core/db.py`.
+- logs: `logs/wifi-zero.log` (rotación diaria), `logs/monitor.log`, `logs/server.log`.
 
-## Hallazgos de la primera pasada en tu red
-
-- Router `Simplefibra-7885` → `192.168.1.254`, fabricante **Nokia Shanghai Bell**, MAC
-  `04:56:65:2f:f7:a0`.
-- 3 hosts visibles en la tabla ARP; el resto de puertos salen **filtrados** → la red usa
-  **aislamiento entre clientes** (client isolation): buena práctica, impide espionaje lateral clásico.
+---
+Más: `docs/ARCHITECTURE.md` (cómo encaja el spam), `docs/RULES.md` (reglas y
+cooldown), `docs/SECURITY.md` (panel/auth), `docs/ETHICS.md` (uso lícito).

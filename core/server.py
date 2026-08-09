@@ -1,148 +1,293 @@
 # -*- coding: utf-8 -*-
-"""wifi-zero web panel (F5) — pure stdlib HTTP server on port 8788.
+"""Panel web de wifi-zero (F4): stdlib http, login (scrypt), SSE, gráficos.
 
-Endpoints:
-  GET  /                       -> panel/index.html
-  GET  /api/stats              -> summary counts
-  GET  /api/hosts              -> all hosts (+ appended open ports)
-  GET  /api/aps                -> all visible APs
-  GET  /api/events?since=N     -> events newer than N (polling feed)
-  GET  /api/topology           -> network topology (interfaces)
-  POST /api/scan               -> trigger a LAN+WiFi cycle now
-  GET  /export/hosts.csv       -> hosts export
+Endpoints REST:
+  GET  /login?to=...          -> página de login (si auth habilitada)
+  POST /api/login             -> {user, pass} -> token de sesión
+  GET  /api/stats             -> KPI
+  GET  /api/hosts             -> hosts + ports + threat score
+  GET  /api/hosts/<ip>        -> detalle de host (historia, puertos, eventos)
+  GET  /api/aps               -> APs
+  GET  /api/aps/signals       -> muestras RSSI por AP
+  GET  /api/networks          -> redes memorizadas
+  GET  /api/events?since=N    -> feed de eventos
+  GET  /api/topology          -> interfaces
+  POST /api/scan              -> scan manual
+  GET  /export/hosts.csv      -> export
+  GET  /sse/events            -> flujo SSE de eventos (after every 3s)
+  GET  /chart/signals.svg     -> gráfico SVG de señales
+  GET  /chart/uptime.svg      -> gráfico SVG de uptime
+Todo lo que no sea GET /login o /api/login requiere cabecera Authorization
+si `panel.auth=true` (config).
 """
 import os
 import sys
 import json
 import time
-import socket
+import base64
 import threading
+import queue
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE_DIR, "core"))
 sys.path.insert(0, os.path.join(BASE_DIR, "scanner"))
-import db  # noqa: E402
 
-PORT = int(os.environ.get("WZ_PORT", "8788"))
-PANEL_DIR = os.path.join(BASE_DIR, "panel")
+import db  # noqa: E402
+import config  # noqa: E402
+import auth  # noqa: E402
+import log  # noqa: E402
+
+log.setup("web", level=20)
+LOGGER = log.get("web")
+
+CFG = config.load()
+PORT = int(os.environ.get("WZ_PORT", CFG.panel.get("port", 8788)))
+BIND = CFG.panel.get("bind", "0.0.0.0")
+PANEL = os.path.join(BASE_DIR, "panel")
 PIDFILE = os.path.join(BASE_DIR, "logs", "server.pid")
 
+# SSE broadcast
+_SUBSCRIBERS = set()
+_SUB_LOCK = threading.Lock()
 
-def now_iso(ts):
+
+def _broadcast(event, data):
+    payload = f"event: {event}\ndata: {json.dumps(data)}\n\n"
+    with _SUB_LOCK:
+        for q in list(_SUBSCRIBERS):
+            try:
+                q.put_nowait(payload)
+            except Exception:
+                pass
+
+
+def _notify_sse(rule, level, message, ip=None, mac=None):
+    _broadcast("event", {"rule": rule, "level": level, "message": message, "ts": int(time.time())})
+
+
+# tecla de sesión compartida (mismo proceso)
+SESSION_KEY = os.environ.get("WZ_SESSION_SECRET")
+
+
+def _fmt(ts):
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)) if ts else "—"
 
 
-def scan_iso(ts):
-    return time.strftime("%H:%M:%S", time.localtime(ts)) if ts else "—"
+def _serve_json(self, obj, code=200):
+    body = json.dumps(obj).encode()
+    self.send_response(code)
+    self.send_header("Content-Type", "application/json; charset=utf-8")
+    self.send_header("Content-Length", str(len(body)))
+    self.end_headers()
+    self.wfile.write(body)
 
 
-def serve_hosts(con):
-    hosts = db.all_hosts(con)
-    ports = db.all_ports(con)
-    byip = {}
-    for p in ports:
-        byip.setdefault(p["ip"], []).append({
-            "port": p["port"], "proto": p["proto"], "service": p["service"],
-            "product": p["product"], "version": p["version"],
-        })
-    out = []
-    for h in hosts:
-        d = dict(h)
-        d["ports"] = byip.get(h["ip"], [])
-        d["state_txt"] = "online" if h["state"] else "offline"
-        d["first_seen"] = scan_iso(h["first_seen"])
-        d["last_seen"] = scan_iso(h["last_seen"])
-        out.append(d)
-    return out
-
-
-def topology():
+def _serve_file(self, path, ctype):
     try:
-        import lan_scan
-        ifs = lan_scan.list_interfaces()
-        return [{"iface": n, "ip": d["ip"], "prefix": d["prefix"]} for n, d in ifs.items()]
-    except Exception as e:
-        return {"error": str(e)}
+        with open(path, "rb") as f:
+            data = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+    except FileNotFoundError:
+        _serve_json(self, {"error": "not found"}, 404)
 
 
-def scan_background():
-    def work():
+def _read_token(self):
+    h = self.headers.get("Authorization", "")
+    if h.startswith("Bearer "):
+        return h[7:]
+    q = parse_qs(urlparse(self.path).query)
+    return q.get("token", [None])[0]
+
+
+def authorized(handler, user):
+    tok = _read_token(handler)
+    return bool(tok and auth.verify_token(tok, user))
+
+
+def _send_sse(self, q):
+    self.send_response(200)
+    self.send_header("Content-Type", "text/event-stream")
+    self.send_header("Cache-Control", "no-cache")
+    self.send_header("Connection", "keep-alive")
+    self.end_headers()
+    self.wfile.write(b"retry: 3000\n\n")
+    self.wfile.flush()
+    while True:
         try:
-            from monitor import run_cycle
-            run_cycle(first=False)
-            con = db.connect()
-            db.log_run(con, "manual")
-            con.close()
-        except Exception as e:
-            con = db.connect()
-            db.add_event(con, "error", "warn", f"Escaneo manual falló: {e}")
-            con.close()
-    threading.Thread(target=work, daemon=True).start()
+            msg = q.get(timeout=3)
+            self.wfile.write(msg.encode())
+            self.wfile.flush()
+        except Exception:
+            # heartbeat/comentar para que el cliente no cierre
+            try:
+                self.wfile.write(b": ping\n\n")
+                self.wfile.flush()
+            except Exception:
+                break
 
 
+# ------------------------------------------------------------------ data API
+def svg_signal(con, bssid=None, w=760, h=180):
+    pts = db.signal_trend(con, bssid)
+    if not pts:
+        return '<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d"><text x="10" y="20" fill="#555" font-size="12">sin datos</text></svg>' % (w, h)
+    times = [p["ts"] for p in pts]
+    rssis = [(p["rssi"] or -100) for p in pts]
+    t0, t1 = min(times), max(times)
+    span = max(1, t1 - t0)
+    r0, r1 = min(rssis), max(rssis)
+    rspan = max(1, r1 - r0)
+    path = []
+    for i, (x, y) in enumerate(zip([(t - t0) / span for t in times], rssis)):
+        px = 10 + (x) * (w - 30)
+        py = 150 - (y - r0) / rspan * (h - 45)
+        path.append(f"{px:.1f},{py:.1f}")
+    d = "M" + " L".join(path)
+    # colores según fuerza
+    color = "#e8c66a" if min(rssis) < -70 else "#7ab89f"
+    labels = []
+    for v in range(-30, -95, -15):
+        if r1 <= v <= r0:
+            py = 150 - (v - r0) / rspan * (h - 45)
+            labels.append(f'<text x="{(w-22):.0f}" y="{py:.0f}" fill="#444" font-size="9">{v}</text>')
+    return f"""
+<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}">
+  <polyline points="{path}" fill="none" stroke="{color}" stroke-width="1.5"/>
+  {''.join(labels)}
+</svg>"""
+
+
+def svg_uptime(con, ip, w=760, h=60):
+    pts = db.host_history(con, ip, minutes=120)
+    if not pts:
+        return '<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}"><text x="10" y="20" fill="#555" font-size="12">sin historia</text></svg>'.format(w, h)
+    times = [p["ts"] for p in pts]
+    t0, t1 = min(times), max(times)
+    span = max(1, t1 - t0)
+    segs = pts[0]["ts"]
+    block = []
+    for p in pts:
+        x = 10 + (p["ts"] - t0) / span * (w - 30)
+        y = 10 if p["state"] else 40
+        block.append(f'<rect x="{x:.1f}" y="{y}" width="2.2" height="6" fill="{"#6fce9a" if p["state"] else "#e07a7a"}"/>')
+    return '<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}">{blocks}</svg>'.format(w=w, h=h, blocks="".join(block))
+
+
+# ------------------------------------------------------------------ handler
 class Handler(BaseHTTPRequestHandler):
-    server_version = "wifi-zero/0.1"
+    server_version = "wifi-zero/2.0"
+    auth_on = CFG.panel.get("auth", True)
+    user = CFG.panel.get("user", "admin")
+
+    # ------------ utils
+    def _require(self):
+        """True si la petición debe pasar (unauthorized → False)."""
+        if not self.auth_on:
+            return True
+        p = urlparse(self.path).path
+        if p in ("/", "", "/login", "/app.js", "/style.css", "/api/login"):
+            return True
+        return bool(authorized(self, self.user))
 
     def _json(self, obj, code=200):
-        body = json.dumps(obj).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        _serve_json(self, obj, code)
 
-    def _send_file(self, path, ctype):
+    def _file(self, path, ctype):
+        _serve_file(self, path, ctype)
+
+    # ---------------- routes
+    def _api_route(self):
+        con = db.connect()
+        path = urlparse(self.path).path
+        qs = parse_qs(urlparse(self.path).query)
         try:
-            with open(path, "rb") as f:
-                data = f.read()
-            self.send_response(200)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-        except FileNotFoundError:
-            self._json({"error": "not found"}, 404)
+            if path == "/api/stats":
+                self._json(db.stats(con))
+            elif path == "/api/hosts":
+                self._json(db.hosts_with_threat(con, CFG, None))
+            elif path.startswith("/api/hosts/"):
+                ip = path.split("/")[3]
+                self._json(sv_hosts_detail(con, ip))
+            elif path == "/api/aps":
+                aps = db.all_aps(con)
+                self._json({"aps": aps, "networks": db.networks(con),
+                            "stations": db.stations_recent(con)})
+            elif path == "/api/aps/signals":
+                bssid = q.get("bssid", [None])[0]
+                self._json({"signals": db.signal_trend(con, bssid)})
+            elif path == "/api/whitelist":
+                self._json({"whitelist": db.whitelist(con)})
+            elif path == "/api/events":
+                since = 0
+                try: since = int(q.get("since", ["0"])[0])
+                except ValueError: pass
+                self._json({"events": db.events_since(con, since, 300)})
+            elif path == "/api/topology":
+                self._json(self._topology())
+            else:
+                self._json({"error": "not found"}, 404)
+        finally:
+            con.close()
+
+    def _topology(self):
+        try:
+            import lan_scan
+            ifs = lan_scan.list_interfaces()
+            return [{"iface": n, "ip": d["ip"], "prefix": d["prefix"]} for n, d in ifs.items()]
+        except Exception as e:
+            return {"error": str(e)}
 
     def do_GET(self):
-        con = db.connect()
-        path = self.path.split("?")[0]
-
-        if path in ("/", "/index.html"):
-            self._send_file(os.path.join(PANEL_DIR, "index.html"), "text/html; charset=utf-8")
+        path = urlparse(self.path).path
+        if not self._require():
+            self._send401()
+            return
+        if path in ("/", ""):
+            self._file(os.path.join(PANEL, "index.html"), "text/html; charset=utf-8")
+        elif path == "/login":
+            self._file(os.path.join(PANEL, "login.html"), "text/html; charset=utf-8")
         elif path == "/app.js":
-            self._send_file(os.path.join(PANEL_DIR, "app.js"), "text/javascript; charset=utf-8")
-        elif path == "/api/stats":
-            self._json(db.stats(con))
-        elif path == "/api/hosts":
-            self._json(serve_hosts(con))
-        elif path == "/api/aps":
-            self._json({"aps": db.all_aps(con)})
-        elif path == "/api/events":
-            since = 0
-            q = self.path.split("?", 1)[-1]
-            if q.startswith("since="):
-                try:
-                    since = int(q[6:])
-                except ValueError:
-                    pass
-            self._json({"events": db.events_since(con, since)})
-        elif path == "/api/topology":
-            self._json(topology())
-        elif path == "/hosts.csv":
-            self._csv(con)
+            self._file(os.path.join(PANEL, "app.js"), "text/javascript; charset=utf-8")
+        elif path == "/style.css":
+            self._file(os.path.join(PANEL, "style.css"), "text/css; charset=utf-8")
+        elif path == "/host.html":
+            self._file(os.path.join(PANEL, "host.html"), "text/html; charset=utf-8")
+        elif path == "/sse/events":
+            with _SUB_LOCK:
+                q = queue.Queue()
+                _SUBSCRIBERS.add(q)
+            _send_sse(self, q)
+        elif path.startswith("/api/"):
+            self._api_route()
+        elif path == "/export/hosts.csv":
+            self._export_csv()
+        elif path.startswith("/chart/signals.svg"):
+            self._chart_signal()
+        elif path.startswith("/chart/uptime.svg"):
+            self._chart_uptime()
         else:
             self._json({"error": "not found"}, 404)
-        con.close()
 
-    def _csv(self, con):
-        hosts = serve_hosts(con)
-        lines = ["ip;mac;vendor;hostname;os;state;first_seen;last_seen;ports"]
+    def _send401(self):
+        self._json({"error": "no autorizado", "login": "/login"}, 401)
+
+    def _export_csv(self):
+        con = db.connect()
+        hosts = db.hosts_with_threat(con, CFG, None)
+        lines = ["ip;mac;vendor;hostname;os;state;score;tier;first_seen;last_seen;ports"]
         for h in hosts:
             ports = ";".join(f"{p['port']}/{p['service'] or '?'}" for p in h["ports"])
-            lines.append(f"{h['ip']};{h.get('mac') or ''};{h.get('hostname') or ''};"
-                         f"{h.get('os') or ''};{h['state_txt']};{h['first_seen']};"
-                         f"{h['last_seen']};{ports}")
+            lines.append(f"{h['ip']};{h.get('mac') or ''};{h.get('vendor') or ''};"
+                         f"{h.get('hostname') or ''};{h.get('os') or ''};"
+                         f"{h['state']};{h['score']};{h['tier']};"
+                         f"{_fmt(h['first_seen'])};{_fmt(h['last_seen'])};{ports}")
         body = ("\n".join(lines)).encode("utf-8-sig")
         self.send_response(200)
         self.send_header("Content-Type", "text/csv; charset=utf-8")
@@ -150,23 +295,108 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+        con.close()
+
+    def _chart_signal(self):
+        q = parse_qs(urlparse(self.path).query)
+        bssid = q.get("bssid", [None])[0]
+        con = db.connect()
+        body = svg_signal(con, bssid).encode()
+        con.close()
+        self.send_response(200)
+        self.send_header("Content-Type", "image/svg+xml")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _chart_uptime(self):
+        q = parse_qs(urlparse(self.path).query)
+        ip = q.get("ip", [""])[0]
+        con = db.connect()
+        body = svg_uptime(con, ip).encode()
+        con.close()
+        self.send_response(200)
+        self.send_header("Content-Type", "image/svg+xml")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_POST(self):
-        if self.path == "/api/scan":
-            scan_background()
-            self._json({"ok": True, "msg": "Escaneo lanzado"})
+        path = urlparse(self.path).path
+        if not self._require():
+            self._send401()
+            return
+        if path == "/api/login":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length))
+                if data.get("user") == self.user and verify(data.get("password", "")):
+                    tok = auth.create_token(self.user)
+                    self._json({"token": tok, "user": self.user})
+                else:
+                    self._json({"error": "credenciales inválidas"}, 401)
+            except Exception as e:
+                self._json({"error": str(e)}, 400)
+        elif path == "/api/scan":
+            _trigger_scan()
+            self._json({"ok": True, "msg": "escaneo lanzado"})
+        elif path == "/api/whitelist":
+            self._whitelist_post()
         else:
             self._json({"error": "not found"}, 404)
+
+    def _whitelist_post(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            data = json.loads(self.rfile.read(length))
+        except Exception:
+            self._json({"error": "bad json"}, 400)
+            return
+        mac = (data.get("mac") or "").lower()
+        if not mac:
+            self._json({"error": "mac requerido"}, 400)
+            return
+        con = db.connect()
+        db.add_whitelist(con, mac, data.get("label", ""), 1 if data.get("trusted", True) else 0)
+        self._json({"ok": True})
+        con.close()
 
     def log_message(self, *a):
         pass
 
 
+def verify(pw):
+    stored = CFG.panel.get("password", "")
+    return auth.verify_password(pw, stored) if stored else False
+
+
+def sv_hosts_detail(con, ip):
+    row = db.all_hosts(con)
+    hit = next((x for x in row if x.get("ip") == ip), None)
+    if not hit:
+        return None
+    hit["history"] = db.host_history(con, ip)
+    hit["ports"] = db.all_ports(con, ip=ip)
+    hit["events"] = [e for e in db.all_events(con, 300) if e.get("ip") == ip]
+    return hit
+
+
+def _trigger_scan():
+    def work():
+        try:
+            sys.path.insert(0, os.path.join(BASE_DIR, "core"))
+            from monitor import Monitor
+            Monitor(CFG).run()
+        except Exception as e:
+            db.add_event(db.connect(), "error", "warn", f"escaneo manual: {e}")
+    threading.Thread(target=work, daemon=True).start()
+
+
 def run():
     with open(PIDFILE, "w") as f:
         f.write(str(os.getpid()))
-    srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    print(f"[server] pid {os.getpid()} → http://0.0.0.0:{PORT}")
+    srv = ThreadingHTTPServer((BIND, PORT), Handler)
+    print(f"[server] pid {os.getpid()} → http://{BIND}:{PORT}  (auth={Handler.auth_on})")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

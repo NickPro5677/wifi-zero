@@ -160,8 +160,61 @@ def mac_vendor(mac):
     return None
 
 
-# ------------------------------------------------------------------ full scan
-def scan_once(ifname="wlan0"):
+# ------------------------------------------------------------------ F3: nmap -sV (service/version) ---------------------------------
+def nmap_service_probe(ip, ports, ifname="wlan0", nmap_bin=None):
+    """Invoca `nmap -sV` sobre un host; devuelve dict port→{service,product,version}.
+
+    Usa scan TCP connect (funciona sin root). Se limita a puertos concretos para
+    no arrastrar nmap por todo el rango en el móvil.
+    """
+    nmap_bin = nmap_bin or "/data/data/com.termux/files/usr/bin/nmap"
+    if not ports:
+        return {}
+    targets = ",".join(str(p) for p in ports)
+    out = subprocess.run(
+        [nmap_bin, "-sV", "-sT", "-Pn", "-n", "-e", ifname,
+         "-p", targets, "-oN", "-", ip],
+        capture_output=True, text=True, timeout=120,
+    )
+    return _parse_nmap_sv(out.stdout)
+
+
+def _parse_nmap_sv(text):
+    """Parse simple de `nmap -sV` -> {port: {service,product,version}}."""
+    res = {}
+    cur = None
+    for line in text.splitlines():
+        m = re.match(r"^(\d+)/tcp\s+open\s+(\S+)(.*)$", line.strip())
+        if m:
+            port, svc, tail = int(m.group(1)), m.group(2), m.group(3)
+            res[port] = {"service": svc, "product": None, "version": None}
+            cur = res[port]
+        elif cur and line.strip():
+            # "Product Foo 1.2.3" styles
+            p = re.match(r"^\s*Product:\s*(.+)$", line)
+            v = re.match(r"^\s*Version:\s*(.+)$", line)
+            if p:
+                cur["product"] = p.group(1).strip()
+            elif v:
+                cur["version"] = v.group(1).strip()
+    return res
+
+
+# ------------------------------------------------------------------ F3 NSE broadcast (sin root)
+def nse_broadcast_scan(ifname="wlan0", timeout=20):
+    """Corre scripts broadcast de nmap que SÍ funcionan sin privilegios
+    (detección de dispositivos por DNS-SD / SSDP de la red). Devuelve texto crudo."""
+    nmap_bin = "/data/data/com.termux/files/usr/bin/nmap"
+    scripts = "broadcast-dns-service-discovery,broadcast-upnp-info"
+    out = subprocess.run(
+        [nmap_bin, "--script", scripts, "-e", ifname, "-n"],
+        capture_output=True, text=True, timeout=timeout,
+    )
+    return out.stdout
+
+
+def scan_once(ifname="wlan0", cfg=None):
+    """Escaneo completo: neigh + TCP sweep + persistencia + nmap -sV."""
     con = db.connect()
     iface = resolve_iface(ifname)
     if not iface:
@@ -194,11 +247,21 @@ def scan_once(ifname="wlan0"):
                        vendor=mac_vendor(neigh[ip].get("mac")) if neigh[ip].get("mac") else None,
                        state=0)
 
-    # 4) service scan on live hosts
+    # 4) service scan on live hosts (TCP probe + nmap -sV si hay puertos)
+    cfg_sv = True
     for ip in live:
         ports = tcp_probe(ip, SCAN_PORTS, timeout=0.5)
-        for p in ports:
-            db.upsert_port(con, ip, p)
+        if ports:
+            for p in ports:
+                db.upsert_port(con, ip, p)
+            if cfg_sv:
+                try:
+                    sv = nmap_service_probe(ip, ports, ifname=ifname)
+                    for p, meta in sv.items():
+                        db.upsert_port(con, ip, p, service=meta.get("service"),
+                                       product=meta.get("product"), version=meta.get("version"))
+                except Exception as e:
+                    print(f"[lan] nmap -sV {ip} err: {e}")
 
     db.log_run(con, "lan", host_count=len(live))
     print(f"[lan] done: {len(live)} alive hosts")

@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wifi-zero · acceso</title>
+<style>
+  body { margin:0; font-family:monospace; background:#0b0e14; color:#d4d7e6;
+         display:flex; align-items:center; justify-content:center; min-height:100vh; }
+  .box { background:#12161f; border:1px solid #262c3b; border-radius:12px; padding:30px 34px; width:300px; }
+  h1 { font-size:16px; letter-spacing:2px; color:#8fd6b8; margin:0 0 4px; }
+  p.sub { color:#5a627a; font-size:11px; margin:0 0 22px; }
+  input { width:100%; background:#0e1119; color:#d4d7e6; border:1px solid #262c3b;
+          border-radius:6px; padding:10px; margin-bottom:12px; font-family:inherit; font-size:14px; }
+  button { width:100%; background:#1c2434; color:#8fd6b8; border:1px solid #2e3e58;
+            border-radius:6px; padding:10px; font-family:inherit; cursor:pointer; }
+  button:hover { border-color:#4a9c7f; }
+  .err { color:#ff7a7a; font-size:12px; margin-top:8px; min-height:16px; }
+</style>
+</head>
+<body>
+  <div class="box">
+    <h1>WIFI-ZERO</h1>
+    <p class="sub">acceso a la consola de seguridad</p>
+    <input id="user" placeholder="usuario" autocomplete="username">
+    <input id="pass" type="password" placeholder="contraseña" autocomplete="current-password">
+    <button id="go">Entrar</button>
+    <div class="err" id="err"></div>
+  </div>
+<script>
+  const err = document.getElementById("err");
+  async function login() {
+    const u = document.getElementById("user").value;
+    const p = document.getElementById("pass").value;
+    try {
+      const r = await fetch("/api/login", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({user: u, password: p}),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "fallo");
+      localStorage.setItem("wz_token", d.token);
+      location.href = "/";
+    } catch (e) { err.textContent = "credenciales inválidas"; }
+  }
+  document.getElementById("go").addEventListener("click", login);
+  document.getElementById("pass").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
+</script>
+</body>
+</html>

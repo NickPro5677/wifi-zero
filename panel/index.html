@@ -3,79 +3,43 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>wifi-zero · vigilancia de la red</title>
-<style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; }
-  body { margin:0; font-family:"JetBrains Mono",monospace,ui-monospace,"Droid Sans Mono",monospace;
-         background:#0b0e14; color:#d4d7e6; font-size:14px; }
-  a { color:#7ab89f; }
-  header { display:flex; align-items:center; gap:16px; flex-wrap:wrap;
-           padding:14px 22px; background:#12161f; border-bottom:1px solid #262c3b;
-           position:sticky; top:0; z-index:10; }
-  header h1 { font-size:16px; margin:0; letter-spacing:1px; color:#8fd6b8; }
-  header .sub { color:#5a627a; font-size:12px; }
-  .spacer { flex:1; }
-  .btn { background:#1c2434; color:#d4d7e6; border:1px solid #2e3e58; padding:7px 12px;
-         border-radius:6px; cursor:pointer; font-family:inherit; }
-  .btn:active { background:#2a3a4a; }
-  .btn:hover { border-color:#4a9c7f; }
-  .badge { padding:2px 8px; border-radius:20px; font-size:11px; }
-  .b-online { background:#123224; color:#6fce9a; }
-  .b-offline { background:#382428; color:#e07a7a; }
-  .b-warn { background:#3a2f14; color:#e8c66a; }
-  .b-crit { background:#402023; color:#ff7a7a; }
-  main { padding:18px 22px; max-width:1280px; margin:0 auto; }
-  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:20px; }
-  .card { background:#12161f; border:1px solid #1f2740; border-radius:10px; padding:14px; }
-  .card .n { font-size:26px; font-weight:700; color:#8fd6b8; }
-  .card .l { font-size:11px; color:#7d86a5; text-transform:uppercase; letter-spacing:1px; }
-  h2 { font-size:14px; color:#9aa3c0; letter-spacing:1px; text-transform:uppercase; margin:24px 0 10px; }
-  table { width:100%; border-collapse:collapse; background:#10141e; }
-  th,td { text-align:left; padding:8px 10px; border-bottom:1px solid #1a2133; font-size:12px; white-space:nowrap; }
-  th { color:#7d86a5; font-size:11px; text-transform:uppercase; letter-spacing:.5px; }
-  td .vendor { color:#8a93b5; font-size:11px; }
-  .mac { color:#95a6d0; font-size:11px; }
-  .ev-log { list-style:none; margin:0; padding:0; }
-  .ev-log li { padding:6px 8px; border-bottom:1px solid #171e30; font-size:12px; }
-  .sev { font-weight:700; font-size:11px; }
-  .sev.info { color:#6aa9ff; }
-  .sev.warn { color:#e8c66a; }
-  .sev.crit { color:#ff7a7a; }
-  .ts { color:#5d6684; font-size:11px; margin-right:8px; }
-  .stripes { display:flex; gap:2px; } 
-  .stripe { width:6px; height:34px; background:#1f2740; border-radius:2px; }
-  .grid2 { display:grid; grid-template-columns:2fr 1fr; gap:18px; }
-  @media (max-width:900px){ .grid2{grid-template-columns:1fr} }
-  .muted { color:#5d6684; }
-  .pill { display:inline-block; background:#172 ; padding:1px 6px; border-radius:4px; font-size:11px; }
-</style>
+<title>wifi-zero · consola</title>
+<link rel="stylesheet" href="/style.css">
 </head>
 <body>
 <header>
-  <h1>WiFi-ZERO</h1>
-  <span class="sub">vigilancia de red local · sin root</span>
+  <h1>WIFI-ZERO</h1>
+  <span class="sub">vigilancia de red · sin root</span>
   <span class="spacer"></span>
-  <button class="btn" id="btnScan">&#9889; Escanear ahora</button>
-  <button class="btn" id="btnExport">&#8681; CSV</button>
+  <span class="sub" id="ver"></span>
+  <button class="btn" id="btnScan">⚡ Escanear</button>
+  <button class="btn" id="btnExport">⇩ CSV</button>
+  <button class="btn" id="btnLogout">Salir</button>
 </header>
 <main>
   <div class="cards" id="cards"></div>
 
-  <h2>Red · hosts detectados</h2>
+  <div class="filterbar">
+    <input id="q" type="search" placeholder="buscar: ip · mac · vendor">
+    <button class="btn" id="btnOnlyCrit">Solo críticos</button>
+  </div>
+
+  <h2>Red · hosts y riesgo</h2>
   <table id="tHosts"><thead><tr>
-    <th>IP</th><th>MAC</th><th>Fabricante</th><th>Estado</th><th>Última vez</th><th>Puertos abiertos</th>
+    <th>IP</th><th>MAC</th><th>Fabricante</th><th>Confianza</th><th>Riesgo</th><th>Estado</th><th>Última</th><th>Puertos</th>
   </tr></thead><tbody></tbody></table>
 
   <div class="grid2">
     <div>
       <h2>Wi‑Fi · APs visibles</h2>
       <table id="tAP"><thead><tr>
-        <th>SSID</th><th>BSSID</th><th>CH</th><th>MHz</th><th>RSSI</th><th>Fabricante</th>
+        <th>SSID</th><th>BSSID</th><th>CH</th><th>RSSI</th><th>Cifrado</th><th>Fabricante</th><th>Señal</th>
       </tr></thead><tbody></tbody></table>
+      <h2>Redes memorizadas</h2>
+      <table id="tNets"><thead><tr><th>SSID</th><th>BSSID</th><th>veces</th></tr></thead><tbody></tbody></table>
     </div>
     <div>
-      <h2>Eventos en vivo</h2>
+      <h2>Eventos en vivo <span id="liveState" class="sub"></span></h2>
       <ul class="ev-log" id="events"></ul>
     </div>
   </div>

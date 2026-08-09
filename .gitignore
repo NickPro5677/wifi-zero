@@ -3,6 +3,8 @@ __pycache__/
 data/*.db
 data/*.db-wal
 data/*.db-shm
+data/reports/
+data/backups/
 logs/*
 !logs/.gitkeep
 *.pid

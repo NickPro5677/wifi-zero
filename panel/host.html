@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wifi-zero · host</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>WIFI-ZERO</h1>
+  <span class="sub"><a href="/">← consola</a></span>
+  <span class="spacer"></span>
+</header>
+<main>
+  <div id="hostCard"></div>
+  <h2>Gráfico de uptime</h2>
+  <img id="upt" alt="uptime" style="width:100%;max-width:760px">
+  <h2>Puertos / servicios</h2>
+  <table id="tPorts"><thead><tr><th>Puerto</th><th>Proto</th><th>Servicio</th><th>Producto</th><th>Versión</th></tr></thead><tbody></tbody></table>
+  <h2>Eventos de este host</h2>
+  <ul class="ev-log" id="events"></ul>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const token = () => localStorage.getItem("wz_token") || "";
+async function getJSON(url) {
+  const r = await fetch(url, { headers: token() ? { Authorization: "Bearer " + token() } : {} });
+  if (r.status === 401) { location.href = "/login"; throw new Error("401"); }
+  return r.json();
+}
+function esc(s){const d=document.createElement("div");d.textContent=s??"";return d.innerHTML;}
+
+(async function () {
+  const ip = new URLSearchParams(location.search).get("ip");
+  if (!ip) return;
+  const h = await getJSON("/api/hosts/" + encodeURIComponent(ip));
+  if (!h) { return; }
+  $("#hostCard").innerHTML = `
+    <div class="card">
+      <div class="n">${h.ip}</div>
+      <div class="l">MAC ${h.mac || "—"} · ${esc(h.vendor) || "?"} ·
+        ${h.state ? "online" : "offline"} · ${esc(h.os || "OS ?")}</div>
+    </div>`;
+  $("#upt").src = "/chart/uptime.svg?ip=" + encodeURIComponent(ip) + "&token=" + encodeURIComponent(token());
+  $("#tPorts tbody").innerHTML = (h.ports || []).map((p) => `<tr>
+    <td>${p.port}</td><td>${p.proto}</td><td>${esc(p.service) || "?"}</td>
+    <td>${esc(p.product) || "—"}</td><td>${esc(p.version) || "—"}</td></tr>`).join("") ||
+    '<tr><td colspan=5 class="muted">sin puertos abiertos visibles</td></tr>';
+  $("#events").innerHTML = (h.events || []).slice(-30)
+    .map((e) => `<li><span class="ts">${new Date(e.ts*1000).toTimeString().slice(0,8)}</span>
+      <span class="sev ${e.level}">${e.level.toUpperCase()}</span>&nbsp;${esc(e.message)}</li>`).join("") ||
+    '<li class="muted">sin eventos</li>';
+})();
+</script>
+</body>
+</html>

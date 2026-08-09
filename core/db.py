@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""SQLite persistence for wifi-zero.
+"""Persistencia SQLite de wifi-zero (compartida por escáner, monitor y panel).
 
-SQLite is shared across the scanner, wifi tracker, monitor and web panel.
-Tables: hosts, ports, aps, events, runs.
+Usa migraciones versionadas: cada lista dentro de MIGRATIONS sube la
+`schema_version`. No alteres migraciones ya publicadas: añade una nueva.
 """
 import os
 import sqlite3
@@ -12,63 +12,133 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_PATH = os.path.join(DATA_DIR, "wifi.db")
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS hosts (
-    ip TEXT PRIMARY KEY,
-    mac TEXT,
-    vendor TEXT,
-    hostname TEXT,
-    os TEXT,
-    first_seen INTEGER NOT NULL,
-    last_seen INTEGER NOT NULL,
-    state INTEGER DEFAULT 1
-);
-CREATE TABLE IF NOT EXISTS ports (
-    ip TEXT NOT NULL,
-    port INTEGER NOT NULL,
-    proto TEXT DEFAULT 'tcp',
-    service TEXT,
-    product TEXT,
-    version TEXT,
-    first_seen INTEGER,
-    last_seen INTEGER,
-    PRIMARY KEY (ip, port, proto)
-);
-CREATE TABLE IF NOT EXISTS aps (
-    bssid TEXT PRIMARY KEY,
-    ssid TEXT,
-    frequency_mhz INTEGER,
-    rssi INTEGER,
-    rssi_max INTEGER,
-    vendor TEXT,
-    first_seen INTEGER,
-    last_seen INTEGER
-);
-CREATE TABLE IF NOT EXISTS events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts INTEGER NOT NULL,
-    kind TEXT NOT NULL,
-    level TEXT NOT NULL,
-    message TEXT NOT NULL,
-    ip TEXT,
-    mac TEXT
-);
-CREATE TABLE IF NOT EXISTS runs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts INTEGER NOT NULL,
-    kind TEXT NOT NULL,
-    host_count INTEGER DEFAULT 0,
-    rssi INTEGER,
-    info TEXT
-);
-"""
+# v1: esquema original entregado en el v0
+# v2: amplía aps (encryption, bandwidth, hidden) y añade redes/whitelist/history
+MIGRATIONS = [
+    # -- v1 (original) ------------------------------------------------
+    """
+    CREATE TABLE IF NOT EXISTS hosts (
+        ip TEXT PRIMARY KEY,
+        mac TEXT,
+        vendor TEXT,
+        hostname TEXT,
+        os TEXT,
+        first_seen INTEGER NOT NULL,
+        last_seen INTEGER NOT NULL,
+        state INTEGER DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS ports (
+        ip TEXT NOT NULL,
+        port INTEGER NOT NULL,
+        proto TEXT DEFAULT 'tcp',
+        service TEXT,
+        product TEXT,
+        version TEXT,
+        first_seen INTEGER,
+        last_seen INTEGER,
+        PRIMARY KEY (ip, port, proto)
+    );
+    CREATE TABLE IF NOT EXISTS aps (
+        bssid TEXT PRIMARY KEY,
+        ssid TEXT,
+        frequency_mhz INTEGER,
+        rssi INTEGER,
+        rssi_max INTEGER,
+        vendor TEXT,
+        first_seen INTEGER,
+        last_seen INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        level TEXT NOT NULL,
+        message TEXT NOT NULL,
+        ip TEXT,
+        mac TEXT
+    );
+    CREATE TABLE IF NOT EXISTS runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        host_count INTEGER DEFAULT 0,
+        rssi INTEGER,
+        info TEXT
+    );
+    """,
+    # v2 (mejoras de datos "F1"") ----------------------------------------
+    """
+    ALTER TABLE aps ADD COLUMN encryption TEXT;
+    ALTER TABLE aps ADD COLUMN encryption_raw TEXT;
+    ALTER TABLE aps ADD COLUMN bandwidth TEXT;
+    ALTER TABLE aps ADD COLUMN center_frequency INTEGER;
+    ALTER TABLE aps ADD COLUMN hidden INTEGER DEFAULT 0;
+    CREATE TABLE IF NOT EXISTS hosts_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        ip TEXT NOT NULL,
+        state INTEGER DEFAULT 1,
+        mac TEXT,
+        vendor TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_hosts_history_ts ON hosts_history(ts);
+    CREATE TABLE IF NOT EXISTS signals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        bssid TEXT NOT NULL,
+        rssi INTEGER,
+        frequency_mhz INTEGER,
+        link_speed INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_signals_ts ON signals(ts);
+    CREATE TABLE IF NOT EXISTS stations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        bssid TEXT,
+        ssid TEXT,
+        ip TEXT,
+        link_speed_mbps INTEGER,
+        network_id INTEGER,
+        rssi INTEGER,
+        state TEXT,
+        connected INTEGER DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS networks (
+        bssid TEXT PRIMARY KEY,
+        ssid TEXT,
+        network_id INTEGER,
+        last_seen INTEGER,
+        count INTEGER DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS whitelist (
+        mac TEXT PRIMARY KEY,
+        label TEXT,
+        trusted INTEGER DEFAULT 1,
+        added INTEGER NOT NULL
+    );
+    """,
+]
 
 
-def connect():
+def _apply_schema(con, idx):
+    """Ejecuta la migración `idx` y la registra en `migrations`."""
+    con.executescript(MIGRATIONS[idx])
+    con.execute("INSERT OR REPLACE INTO migrations(version, applied_at) VALUES (?, ?)",
+                (idx + 1, now()))
+    con.commit()
+
+
+def connect(db_path=DB_PATH):
     os.makedirs(DATA_DIR, exist_ok=True)
-    con = sqlite3.connect(DB_PATH)
+    con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
-    con.executescript(SCHEMA)
+    con.executescript(
+        "CREATE TABLE IF NOT EXISTS migrations (version INTEGER PRIMARY KEY, applied_at INTEGER);"
+    )
+    cur = con.execute("SELECT COALESCE(MAX(version),0) AS v FROM migrations").fetchone()
+    current = cur["v"]
+    for idx in range(current, len(MIGRATIONS)):
+        _apply_schema(con, idx)
     con.commit()
     return con
 
@@ -77,6 +147,7 @@ def now():
     return int(time.time())
 
 
+# -------------------------------------------------------------- events
 def add_event(con, kind, level, message, ip=None, mac=None):
     con.execute(
         "INSERT INTO events(ts, kind, level, message, ip, mac) VALUES (?,?,?,?,?,?)",
@@ -104,6 +175,7 @@ def all_events(con, limit=300):
     return [dict(r) for r in reversed(rows)]
 
 
+# -------------------------------------------------------------- hosts
 def upsert_host(con, ip, mac=None, vendor=None, hostname=None, osn=None, state=1):
     t = now()
     row = con.execute("SELECT * FROM hosts WHERE ip=?", (ip,)).fetchone()
@@ -114,20 +186,72 @@ def upsert_host(con, ip, mac=None, vendor=None, hostname=None, osn=None, state=1
                last_seen=?, state=? WHERE ip=?""",
             (mac, vendor, hostname, osn, t, state, ip),
         )
+        _record_history(con, ip, state)
     else:
         con.execute(
             """INSERT INTO hosts(ip,mac,vendor,hostname,os,first_seen,last_seen,state)
                VALUES (?,?,?,?,?,?,?,?)""",
             (ip, mac, vendor, hostname, osn, t, t, state),
         )
+        _record_history(con, ip, state)
     con.commit()
 
 
-def touch_host(con, ip):
-    row = con.execute("SELECT ip FROM hosts WHERE ip=?", (ip,)).fetchone()
-    if row:
-        con.execute("UPDATE hosts SET last_seen=?, state=1 WHERE ip=?", (now(), ip))
-        con.commit()
+def _record_history(con, ip, state):
+    """Registra un punto de presencia para los gráficos de uptime."""
+    t = now()
+    # compacto: una fila por día para no crecer sin límite
+    con.execute(
+        """INSERT INTO hosts_history(ts, ip, state) SELECT ?,?,? WHERE NOT EXISTS (
+               SELECT 1 FROM hosts_history WHERE ip=? AND state=?
+                   AND ts >= ?)""",
+        (t, ip, state, ip, state, t - 600),
+    )
+
+
+def record_signal(con, bssid, rssi, mhz, link_speed=None, station=False):
+    con.execute(
+        "INSERT INTO signals(ts,bssid,rssi,frequency_mhz,link_speed) VALUES (?,?,?,?,?)",
+        (now(), bssid, rssi, mhz, link_speed),
+    )
+    con.commit()
+
+
+def record_station(con, st):
+    t = now()
+    ip = st.get("ip")
+    bssid = (st.get("bssid") or "").lower()
+    con.execute(
+        """INSERT INTO stations(ts,bssid,ssid,ip,link_speed_mbps,network_id,rssi,connected)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (t, bssid, st.get("ssid"), ip, st.get("link_speed_mbps"), st.get("network_id"),
+         st.get("rssi"), 1 if st.get("connected", True) else 0),
+    )
+    con.execute(
+        """INSERT OR IGNORE INTO networks(bssid,ssid,network_id,last_seen,count)
+           VALUES (?,?,?,?,1)""",
+        (bssid, st.get("ssid"), st.get("network_id"), t),
+    )
+
+
+def whitelist(con):
+    rows = con.execute("SELECT * FROM whitelist").fetchall()
+    return [dict(r) for r in rows]
+
+
+def is_trusted_mac(con, mac):
+    if not mac:
+        return None
+    row = con.execute("SELECT trusted FROM whitelist WHERE mac=?", (mac.lower(),)).fetchone()
+    return bool(row["trusted"]) if row else None
+
+
+def add_whitelist(con, mac, label="", trusted=1):
+    con.execute(
+        "INSERT OR REPLACE INTO whitelist(mac,label,trusted,added) VALUES (?,?,?,?)",
+        (mac.lower(), label, trusted, now()),
+    )
+    con.commit()
 
 
 def all_hosts(con):
@@ -135,11 +259,11 @@ def all_hosts(con):
     return [dict(r) for r in rows]
 
 
+# -------------------------------------------------------------- ports
 def upsert_port(con, ip, port, proto="tcp", service=None, product=None, version=None):
     t = now()
     row = con.execute(
-        "SELECT * FROM ports WHERE ip=? AND port=? AND proto=?",
-        (ip, port, proto),
+        "SELECT * FROM ports WHERE ip=? AND port=? AND proto=?", (ip, port, proto)
     ).fetchone()
     if row:
         con.execute(
@@ -166,7 +290,9 @@ def all_ports(con, ip=None):
     return [dict(r) for r in rows]
 
 
-def upsert_ap(con, ap):
+# -------------------------------------------------------------- aps
+def upsert_ap(con, ap, encryption=None, encryption_raw=None, bandwidth=None,
+              center_frequency=None, hidden=False):
     t = now()
     bssid = ap.get("bssid", "").lower()
     if not bssid:
@@ -177,15 +303,22 @@ def upsert_ap(con, ap):
         best = max(row["rssi_max"] or (rssi or 0), rssi or 0)
         con.execute(
             """UPDATE aps SET ssid=COALESCE(?,ssid), frequency_mhz=COALESCE(?,frequency_mhz),
-               rssi=?, rssi_max=?, vendor=COALESCE(?,vendor), last_seen=? WHERE bssid=?""",
-            (ap.get("ssid"), ap.get("frequency_mhz"), rssi, best, ap.get("vendor"), t, bssid),
+               rssi=?, rssi_max=?, vendor=COALESCE(?,vendor), encryption=COALESCE(?,encryption),
+               encryption_raw=COALESCE(?,encryption_raw), bandwidth=COALESCE(?,bandwidth),
+               center_frequency=COALESCE(?,center_frequency),
+               hidden=COALESCE(?,hidden), last_seen=? WHERE bssid=?""",
+            (ap.get("ssid"), ap.get("frequency_mhz"), rssi, best, ap.get("vendor"),
+             encryption, encryption_raw, ap.get("bandwidth"), center_frequency,
+             1 if hidden else None, t, bssid),
         )
     else:
         con.execute(
-            """INSERT INTO aps(bssid,ssid,frequency_mhz,rssi,rssi_max,vendor,first_seen,last_seen)
-               VALUES (?,?,?,?,?,?,?,?)""",
+            """INSERT INTO aps(bssid,ssid,frequency_mhz,rssi,rssi_max,vendor,
+               encryption,encryption_raw,bandwidth,center_frequency,hidden,first_seen,last_seen)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (bssid, ap.get("ssid"), ap.get("frequency_mhz"), rssi, rssi or 0,
-             ap.get("vendor"), t, t),
+             ap.get("vendor"), encryption, encryption_raw, ap.get("bandwidth"),
+             center_frequency, 1 if hidden else 0, ap.get("vendor"), t, t),
         )
     con.commit()
 
@@ -195,6 +328,17 @@ def all_aps(con):
     return [dict(r) for r in rows]
 
 
+def aps_since(con, since_ts=None):
+    q = "SELECT * FROM aps"
+    if since_ts:
+        q += " WHERE last_seen >= ?"
+        rows = con.execute(q, (since_ts,)).fetchall()
+    else:
+        rows = con.execute(q).fetchall()
+    return [dict(r) for r in rows]
+
+
+# -------------------------------------------------------------- runs/stats
 def log_run(con, kind, host_count=0, rssi=None, info=""):
     cur = con.execute(
         "INSERT INTO runs(ts,kind,host_count,rssi,info) VALUES (?,?,?,?,?)",
@@ -212,7 +356,61 @@ def stats(con):
     port_ips = con.execute("SELECT COUNT(DISTINCT ip) AS c FROM ports").fetchone()["c"]
     first = con.execute("SELECT MIN(first_seen) AS m FROM hosts").fetchone()["m"]
     last = con.execute("SELECT MAX(ts) AS m FROM runs").fetchone()["m"]
+    version = con.execute("SELECT COALESCE(MAX(version),0) AS v FROM migrations").fetchone()["v"]
     return {
         "hosts": hosts, "up": up, "aps": aps, "events": ev,
         "port_ips": port_ips, "first_scan": first, "last_run": last,
+        "version": version,
     }
+
+
+# ------------------------------------------------------------------ panel data
+def host_history(con, ip, minutes=120):
+    """Puntos de presencia de un host (para curva de uptime)."""
+    since = now() - minutes * 60
+    rows = con.execute(
+        """SELECT ts, state FROM hosts_history WHERE ip=? AND ts>=?
+           ORDER BY ts""", (ip, since),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def signal_trend(con, bssid=None, minutes=120):
+    """Muestras RSSI/host para AP. Devuelve (bssid, ts, rssi)."""
+    since = now() - minutes * 60
+    if bssid:
+        rows = con.execute(
+            "SELECT ts,rssi FROM signals WHERE bssid=? AND ts>=? ORDER BY ts",
+            (bssid, since)).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT bssid,ts,rssi FROM signals WHERE ts>=? ORDER BY ts", (since,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def networks(con):
+    rows = con.execute("SELECT * FROM networks ORDER BY count DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def stations_recent(con, limit=20):
+    rows = con.execute("SELECT * FROM stations ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(r) for r in reversed(rows)]
+
+
+def hosts_with_threat(con, cfg=None, ports=None):
+    """Hosts + score + whitelist. Devuelve list[dict]."""
+    from threat import score_host
+    hosts = all_hosts(con)
+    pl = (ports or all_ports(con))
+    by_mac = {wh["mac"]: wh for wh in whitelist(con)}
+    out = []
+    for h in hosts:
+        tm = by_mac.get((h.get("mac") or "").lower())
+        trusted = bool(tm["trusted"]) if tm else None
+        hp = [p for p in pl if p.get("ip") == h["ip"]]
+        sc = score_host(h, hp, trusted, cfg)
+        out.append({**h, "trusted": trusted, "label": (tm or {}).get("label", ""),
+                    "score": sc["score"], "tier": sc["tier"], "ports": hp})
+    out.sort(key=lambda x: (-x["score"], x["ip"]))
+    return out
