@@ -20,7 +20,12 @@ COOLDOWNS = {
     "ap_twin": 360,
     "new_port": 300,
     "watchlist_down": 300,
+    "watchlist_unknown": 600,
     "ap_reconnect": 120,
+    "mac_randomized": 1800,
+    "ip_conflict": 600,
+    "gateway_changed": 1800,
+    "ap_open": 1800,
 }
 
 
@@ -84,6 +89,24 @@ class Rules:
             self._dedupe("watchlist_unknown", "warn",
                          f"Dispositivo watchlist ' {label}' ({mac}) llegó DESCONOCIDO", ip=ip, mac=mac)
 
+    def mac_randomized(self, ip, mac, vendor=None):
+        """MAC con bit localmente administrado ⇒ identidad randomizada."""
+        self._dedupe("mac_randomized", "warn",
+                     f"MAC randomizada (LAA) detectada: {ip} ({mac}, {vendor or '?'}) "
+                     f"— ¿privacidad o evasión?", ip=ip, mac=mac)
+
+    def ip_conflict(self, ip, macs, vendors=None):
+        """Dos MAC distintas respondiendo por la misma IP (conflicto/ARP spoof)."""
+        self._dedupe("ip_conflict", "crit",
+                     f"CONFLICTO DE IP: {ip} responde con {', '.join(str(m) for m in macs[:3])}",
+                     ip=ip, mac=macs[0] if macs else None)
+
+    def gateway_changed(self, old_mac, new_mac, gw_ip):
+        """Cambió la MAC de la puerta de enlace (posible MITM)."""
+        self._dedupe("gateway_changed", "crit",
+                     f"⚠ GATEWAY {gw_ip} cambió de MAC {old_mac} → {new_mac} (¿MITM?)",
+                     ip=gw_ip, mac=new_mac)
+
     def host_offline(self, ip, mac, critical_label=None):
         trusted = self._trusted(mac)
         if critical_label and not trusted:
@@ -103,6 +126,10 @@ class Rules:
                      f"AP nuevo visible: {ssid or '<oculto>'} (BSSID {bssid}, canal {ap.get('channel')}, "
                      f"RSSI {ap.get('rssi')}, {'WPA3' if ap.get('encryption') == 'WPA3' else ap.get('encryption')})",
                      ip=None, mac=bssid)
+        if not ap.get("encryption") or ap.get("encryption") == "OPEN":
+            self._dedupe("ap_open", "crit",
+                         f"AP ABIERTO (SIN CIFRADO) visible: {ssid or '<oculto>'} "
+                         f"(BSSID {bssid}, canal {ap.get('channel')})", ip=None, mac=bssid)
 
     def ap_encryption_downgrade(self, ap, old_enc, new_enc):
         self._dedupe("ap_encryption_downgrade", "crit",

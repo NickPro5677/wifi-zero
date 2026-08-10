@@ -5,6 +5,14 @@ Cada ciclo: escanea LAN (n) y WiFi (wifi), pasa los cambios por el motor de
 reglas (Rules) → eventos en SQLite → notificaciones. Es battery-aware y cae
 a modo silencio si el teléfono se desenchufa con poca batería; además respeta
 el estado real de la red (si el supplicant NO está COMPLETED no escanea).
+
+v3:
+  - detección offline por transición de estado (prev alive → no visto ahora)
+  - modo eco: con poca batería se dobla el intervalo LAN y se omite nmap -sV
+  - cadencia de escaneo de servicios (intervalo `sv`) por separado del LAN
+  - serie histórica de riesgo por host (tabla scores)
+  - vigilancia de la puerta de enlace (cambio de MAC = posible MITM)
+  - detección de conflictos de IP y de MAC randomizadas (LAA)
 """
 import json
 import os
@@ -23,6 +31,7 @@ import config  # noqa: E402
 from log import setup as log_setup, get as log_get  # noqa: E402
 from rules import Rules  # noqa: E402
 from notify import Notifier  # noqa: E402
+from threat import is_randomized_mac  # noqa: E402
 
 log_setup("monitor", level=10 if os.environ.get("WZ_DEBUG") else 20)
 LOGGER = log_get("monitor")
@@ -44,6 +53,11 @@ def battery_state():
     return True, 100
 
 
+def battery_flush():
+    """alias → battery_state() (parte del loop y de tests)."""
+    return battery_state()
+
+
 def wifi_gate():
     st = wifi_track.get_link()
     return bool(st and st.get("connected"))
@@ -56,6 +70,9 @@ class Monitor:
         self.notifier = Notifier(cfg)
         self.rs = Rules(self.con, cfg, self._emit)
         self._first = True
+        self._next_sv = 0.0
+        self._next_prune = time.time() + 3600
+        self._eco = False
 
     def _emit(self, rule, level, message, ip=None, mac=None):
         db.add_event(self.con, rule, level, message, ip=ip, mac=mac)
@@ -69,35 +86,91 @@ class Monitor:
                 return e.get("label", "crítico")
         return None
 
+    # ------------------------------------------------------------- power gate
+    def _power_profile(self):
+        """Devuelve (eco, pct): eco=true si desenchufado por debajo de eco_below."""
+        charging, pct = battery_flush()
+        eco = (not charging and pct <= self.cfg.battery.get("eco_below", 35))
+        if eco and not self._eco:
+            LOGGER.warning("batería %d%% desenchufada — modo eco (intervalos ×2, sin -sV)", pct)
+        elif self._eco and not eco:
+            LOGGER.info("batería recuperada (%d%%) — modo normal", pct)
+        self._eco = eco
+        return eco
+
     # -------------------------------------------------------------- LAN cycle
-    def _cycle_lan(self):
+    def _cycle_lan(self, deep_sv):
         before = {h["ip"]: h for h in db.all_hosts(self.con)}
         try:
-            lan_scan.scan_once()
+            if os.environ.get("WZ_ECO") == "1" or self._eco:
+                os.environ["WZ_ECO"] = "1"
+            snap = lan_scan.scan_once(cfg=self.cfg, deep=deep_sv)
+            if not self._eco:
+                os.environ.pop("WZ_ECO", None)
         except Exception as e:
             LOGGER.error("lan err %r", e)
+            return
 
+        alive_now = set(snap.get("live", {}))
+        macs = snap.get("live", {})
         cur = {h["ip"]: h for h in db.all_hosts(self.con)}
-        seen = set()
+
         if not self._first:
-            for ip, h in cur.items():
-                if not h.get("state"):
-                    continue
-                seen.add(ip)
+            # online: nuevos y re-identificaciones
+            for ip in alive_now:
+                h = cur.get(ip, {})
                 prev = before.get(ip)
+                is_new = prev is None
                 self.rs.host_seen(
                     ip, h.get("mac"), vendor=h.get("vendor"),
-                    is_new=prev is None,
+                    is_new=is_new,
                     replaced_mac=prev.get("mac") if prev else None,
                 )
-            # offline: antes estaba y ahora ya no está
+                if is_new and is_randomized_mac(h.get("mac")):
+                    self.rs.mac_randomized(ip, h.get("mac"), h.get("vendor"))
+            # offline por transición de estado: antes con línea, ahora no visible
             for ip, h in before.items():
-                if h.get("state") == 1 and ip not in cur:
+                if h.get("state") == 1 and ip not in alive_now:
                     self.rs.host_offline(ip, h.get("mac"), self._is_critical(h.get("mac")))
+        # conflictos de IP en el snapshot (2+ MACs para la misma IP)
+        for ip, ip_macs in (snap.get("conflicts") or {}).items():
+            self.rs.ip_conflict(ip, list(ip_macs))
+        # vigilancia del gateway (cambio de MAC = MITM clásico)
+        self._watch_gateway(snap.get("gateway"), macs)
         # puertos que se abrieron en este mismo ciclo
         for p in db.all_ports(self.con):
             if p["first_seen"] == p["last_seen"]:
                 self.rs.port_new(p["ip"], p["port"], p.get("service"))
+
+    def _watch_gateway(self, gw_ip, macs):
+        if not gw_ip:
+            return
+        gw_mac = macs.get(gw_ip)
+        if not gw_mac:
+            return
+        last = self.con.execute(
+            "SELECT info FROM runs WHERE kind='gateway' ORDER BY id DESC LIMIT 1").fetchone()
+        old_ip, old_mac = None, None
+        if last and last["info"]:
+            parts = last["info"].split("|", 1)
+            if len(parts) == 2:
+                old_ip, old_mac = parts
+        if old_mac and old_mac != gw_mac:
+            self.rs.gateway_changed(old_mac, gw_mac, gw_ip)
+        db.log_run(self.con, "gateway", info=f"{gw_ip}|{gw_mac}")
+        if gw_mac:
+            db.upsert_host(self.con, gw_ip, mac=gw_mac,
+                           vendor=lan_scan.mac_vendor(gw_mac), state=1)
+
+    def _record_scores(self):
+        try:
+            hosts = db.hosts_with_threat(self.con, self.cfg)
+        except Exception as e:
+            LOGGER.error("scores err %r", e)
+            return
+        for h in hosts:
+            if h.get("state") or h.get("score", 0) >= 30:
+                db.record_score(self.con, h["ip"], h["score"], h["tier"])
 
     # ------------------------------------------------------------- WiFi
     def _cycle_wifi(self):
@@ -128,43 +201,46 @@ class Monitor:
         for s in dups:
             self.rs.ap_twin(s)
 
-    # ------------------------------------------------------------- power gate
-    def _should_scan(self):
-        charging, pct = battery_flush()
-        if charging or pct >= self.cfg.battery.get("pause_below", 15):
-            return True
-        LOGGER.info("batería %d%% desenchufada — pausa de escaneo", pct)
-        return False
-
     # ------------------------------------------------------------------ loop
-    def run(self):
+    def run(self, deep_sv=False):
         """Una vuelta completa (usado por el loop y por la API /scan)."""
-        self._cycle_lan()
+        self._cycle_lan(deep_sv)
         self._cycle_wifi()
         self._first = False
 
     def loop(self):
         with open(PIDFILE, "w") as f:
             f.write(str(os.getpid()))
-        LOGGER.info("monitor pid %s — LAN cada %ss, WiFi cada %ss",
-                    os.getpid(), self.cfg.lan_interval, self.cfg.wifi_interval)
+        LOGGER.info("monitor pid %s — LAN %ss, sv %ss, WiFi %ss",
+                    os.getpid(), self.cfg.lan_interval, self.cfg.sv_interval,
+                    self.cfg.wifi_interval)
         nxt = {}
         while True:
             t = time.time()
             if not wifi_gate():
                 LOGGER.info("sin WiFi (supplicant inactive) — pausado")
-            elif self._should_scan() and t >= nxt.get("lan", 0):
-                try:
-                    self.run()
-                except Exception as e:
-                    LOGGER.error("cycle err %r", e)
-                nxt["lan"] = t + self.cfg.lan_interval
+            else:
+                eco = self._power_profile()
+                lan_iv = self.cfg.lan_interval * (2 if eco else 1)
+                sv_iv = self.cfg.sv_interval * (2 if eco else 1)
+                if t >= nxt.get("lan", 0):
+                    deep = (t >= self._next_sv)
+                    if deep:
+                        self._next_sv = t + sv_iv
+                    try:
+                        self.run(deep_sv=deep)
+                    except Exception as e:
+                        LOGGER.error("cycle err %r", e)
+                    nxt["lan"] = t + lan_iv
+                    self._record_scores()
+                if t >= self._next_prune:
+                    try:
+                        removed = db.prune(self.con)
+                        LOGGER.info("prune: %s", removed)
+                    except Exception as e:
+                        LOGGER.error("prune err %r", e)
+                    self._next_prune = t + 86400
             time.sleep(5)
-
-
-def battery_flush():
-    """alias → battery_state() (parte del loop y de tests)."""
-    return battery_state()
 
 
 def stop():
