@@ -77,6 +77,9 @@ def get_aps():
             "ssid": a.get("ssid") or None,
             "frequency_mhz": f,
             "channel": channel_of(f),
+            "band": band_of(f),
+            "channel_utilization": a.get("channel_utilization"),
+            "dfs": a.get("is_dfs") or a.get("dfs", False),
             "rssi": a.get("rssi"),
             "vendor": mac_vendor(bssid),
             "encryption": pc["encryption"],
@@ -94,7 +97,21 @@ def channel_of(freq):
         return (freq - 2412) // 5 + 1
     if freq and 5180 <= freq <= 5825:
         return (freq - 5180) // 5 + 36
+    if freq and 5955 <= freq <= 7115:
+        return (freq - 5955) // 5 + 1
     return None
+
+
+def band_of(freq):
+    if not freq:
+        return None
+    if 2400 <= freq <= 2500:
+        return "2.4GHz"
+    if 5150 <= freq <= 5925:
+        return "5GHz"
+    if 5925 <= freq <= 7125:
+        return "6GHz"
+    return "?"
 
 
 def get_link():

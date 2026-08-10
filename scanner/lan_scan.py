@@ -63,6 +63,28 @@ def resolve_iface(ifname="wlan0"):
     return None
 
 
+def get_gateway(iface=None):
+    """IP de la puerta de enlace por defecto.
+
+    En Android la ruta por defecto vive en tablas de ruteo auxiliares
+    (p.ej. 1010/1021), por eso se mira también `ip route show table all`.
+    """
+    cmd = ["route", "show", "default"]
+    if iface:
+        cmd += ["dev", iface]
+    out = _ip(cmd)
+    for line in out.splitlines():
+        m = re.match(r"default\s+via\s+(\d+\.\d+\.\d+\.\d+)", line)
+        if m:
+            return m.group(1)
+    # buscar en todas las tablas
+    for line in _ip(["route", "show", "table", "all"]).splitlines():
+        m = re.match(r"default\s+via\s+(\d+\.\d+\.\d+\.\d+)", line)
+        if m:
+            return m.group(1)
+    return None
+
+
 def iface_to_range(info):
     """Return a /24 style base (e.g. 192.168.1) regardless of prefix."""
     from ipaddress import ip_network
@@ -213,13 +235,27 @@ def nse_broadcast_scan(ifname="wlan0", timeout=20):
     return out.stdout
 
 
-def scan_once(ifname="wlan0", cfg=None):
-    """Escaneo completo: neigh + TCP sweep + persistencia + nmap -sV."""
+def scan_once(ifname="wlan0", cfg=None, deep=False):
+    """Escaneo completo: neigh + TCP sweep + persistencia + nmap -sV.
+
+    Devuelve el snapshot del ciclo: {live: {ip: mac}, base, gateway, conflictos}.
+    Respeta cfg:
+      - scanner.ports_scan  -> puertos del barrido TCP (por defecto SCAN_PORTS)
+      - scanner.service_versions -> deep nmap -sV si es True (y `deep`=True)
+      - eco (env WZ_ECO=1 o cfg battery) -> sin nmap -sV
+    """
+    cfg_ports = None
+    cfg_sv = True
+    if cfg is not None:
+        cfg_ports = getattr(cfg, "scanner_ports", None) or None
+        cfg_sv = bool(cfg.get("scanner", "service_versions", default=True))
+    ports_scan = cfg_ports or SCAN_PORTS
+
     con = db.connect()
     iface = resolve_iface(ifname)
     if not iface:
         print("[lan] no usable interface")
-        return {}
+        return {"live": {}, "gateway": None, "base": None}
 
     base = iface_to_range(iface)
     cidr = f"{base}/24"
@@ -237,24 +273,27 @@ def scan_once(ifname="wlan0", cfg=None):
         live.add(ip)
     print(f"[lan] alive (neigh+tcp): {len(live)}")
 
-    # 3) persist hosts
+    # 3) persist hosts (macs del snapshot; los que ya no se ven quedan offline)
     macs = {ip: n.get("mac") for ip, n in neigh.items()}
+    seen_ips = set()
     for ip in live:
         mac = macs.get(ip)
         db.upsert_host(con, ip, mac=mac, vendor=mac_vendor(mac) if mac else None, state=1)
+        seen_ips.add(ip)
     for ip in set(neigh) - live:
-        db.upsert_host(con, ip, mac=neigh[ip].get("mac"),
-                       vendor=mac_vendor(neigh[ip].get("mac")) if neigh[ip].get("mac") else None,
-                       state=0)
+        mac = neigh[ip].get("mac")
+        db.upsert_host(con, ip, mac=mac,
+                       vendor=mac_vendor(mac) if mac else None, state=0)
+        seen_ips.add(ip)
 
     # 4) service scan on live hosts (TCP probe + nmap -sV si hay puertos)
-    cfg_sv = True
+    eco = os.environ.get("WZ_ECO") == "1"
     for ip in live:
-        ports = tcp_probe(ip, SCAN_PORTS, timeout=0.5)
+        ports = tcp_probe(ip, ports_scan, timeout=0.5)
         if ports:
             for p in ports:
                 db.upsert_port(con, ip, p)
-            if cfg_sv:
+            if cfg_sv and deep and not eco:
                 try:
                     sv = nmap_service_probe(ip, ports, ifname=ifname)
                     for p, meta in sv.items():
@@ -265,7 +304,17 @@ def scan_once(ifname="wlan0", cfg=None):
 
     db.log_run(con, "lan", host_count=len(live))
     print(f"[lan] done: {len(live)} alive hosts")
-    return {"alive": len(live), "base": base}
+
+    # conflictos de IP: varias MAC para la misma IP en este snapshot
+    conflicts = {}
+    for ip, n in neigh.items():
+        if n.get("mac") and n["state"]:
+            conflicts.setdefault(ip, set()).add(n["mac"])
+    conflicts = {ip: sorted(v) for ip, v in conflicts.items() if len(v) > 1}
+    return {"live": {ip: macs.get(ip) for ip in live},
+            "gateway": get_gateway(ifname),
+            "base": base,
+            "conflicts": conflicts}
 
 
 if __name__ == "__main__":
