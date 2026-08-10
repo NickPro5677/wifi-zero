@@ -48,8 +48,27 @@
     "telegram_chat": ""
   },
   "watchlist": [],
+  "retention": {
+    "signals": 7,
+    "hosts_history": 14,
+    "scores": 30,
+    "stations": 7,
+    "events": 30,
+    "ports_closed": 7
+  },
+  "gateway_watch": true,
   "threat": {
     "unknown_vendor_warn": true,
-    "new_open_port": 15
+    "new_open_port": 15,
+    "weights": {
+      "untrusted": 25,
+      "unknown": 10,
+      "no_vendor": 15,
+      "random_mac": 15,
+      "per_port": 6,
+      "max_ports": 30,
+      "weak_svc": 10,
+      "danger_port": 15
+    }
   }
 }

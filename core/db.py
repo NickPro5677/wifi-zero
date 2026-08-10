@@ -117,6 +117,20 @@ MIGRATIONS = [
         added INTEGER NOT NULL
     );
     """,
+    # v3 (v3: riesgo histórico, índices y limpieza) --------------------------
+    """
+    CREATE TABLE IF NOT EXISTS scores (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        ip TEXT NOT NULL,
+        score INTEGER NOT NULL,
+        tier TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_scores_ip_ts ON scores(ip, ts);
+    CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+    CREATE INDEX IF NOT EXISTS idx_ports_last_seen ON ports(last_seen);
+    CREATE INDEX IF NOT EXISTS idx_stations_ts ON stations(ts);
+    """,
 ]
 
 
@@ -132,6 +146,8 @@ def connect(db_path=DB_PATH):
     os.makedirs(DATA_DIR, exist_ok=True)
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA busy_timeout=5000")
     con.executescript(
         "CREATE TABLE IF NOT EXISTS migrations (version INTEGER PRIMARY KEY, applied_at INTEGER);"
     )
@@ -318,7 +334,7 @@ def upsert_ap(con, ap, encryption=None, encryption_raw=None, bandwidth=None,
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (bssid, ap.get("ssid"), ap.get("frequency_mhz"), rssi, rssi or 0,
              ap.get("vendor"), encryption, encryption_raw, ap.get("bandwidth"),
-             center_frequency, 1 if hidden else 0, ap.get("vendor"), t, t),
+             center_frequency, 1 if hidden else 0, t, t),
         )
     con.commit()
 
@@ -414,3 +430,53 @@ def hosts_with_threat(con, cfg=None, ports=None):
                     "score": sc["score"], "tier": sc["tier"], "ports": hp})
     out.sort(key=lambda x: (-x["score"], x["ip"]))
     return out
+
+
+# ------------------------------------------------------------------ riesgo histórico
+def record_score(con, ip, score, tier):
+    """Persiste un punto de la serie de riesgo de un host (para /chart/risk)."""
+    con.execute("INSERT INTO scores(ts,ip,score,tier) VALUES (?,?,?,?)",
+                (now(), ip, int(score), tier))
+    con.commit()
+
+
+def score_history(con, ip=None, minutes=1440):
+    since = now() - minutes * 60
+    if ip:
+        rows = con.execute(
+            "SELECT ts,score,tier FROM scores WHERE ip=? AND ts>=? ORDER BY ts",
+            (ip, since)).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT ts,ip,score,tier FROM scores WHERE ts>=? ORDER BY ts",
+            (since,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ------------------------------------------------------------------ limpieza por retención
+DEFAULT_RETENTION_DAYS = {
+    "signals": 7, "hosts_history": 14, "scores": 30,
+    "stations": 7, "events": 30, "ports_closed": 7,
+}
+
+
+def prune(con, retention_days=None):
+    """Borra filas viejas según retención en días. Devuelve dict con filas por tabla."""
+    cfg = retention_days or DEFAULT_RETENTION_DAYS
+    cutoff = now() - 86400 * max(1, int(cfg.get("events", 30)))
+    removed = {}
+
+    def cut(table, ts_col, days):
+        c = cutoff if days == cfg.get("events") else now() - 86400 * max(1, int(days))
+        cur = con.execute(f"DELETE FROM {table} WHERE {ts_col} < ?", (c,))
+        return cur.rowcount
+
+    for table, ts_col in (("signals", "ts"), ("hosts_history", "ts"),
+                          ("stations", "ts"), ("scores", "ts"), ("events", "ts")):
+        removed[table] = cut(table, ts_col, cfg.get(table, 30))
+    # puertos sin ver en N días (servicio cerrado) se olvidan
+    closed_days = max(1, int(cfg.get("ports_closed", 7)))
+    removed["ports"] = con.execute(
+        "DELETE FROM ports WHERE last_seen < ?", (now() - 86400 * closed_days,)).rowcount
+    con.commit()
+    return removed

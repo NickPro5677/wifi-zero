@@ -24,7 +24,20 @@ DEFAULTS = {
     },
     "pushes": {"enabled": False, "ntfy_url": "", "telegram_token": "", "telegram_chat": ""},
     "watchlist": [],
-    "threat": {"unknown_vendor_warn": True, "new_open_port": 15},
+    "retention": {
+        "signals": 7, "hosts_history": 14, "scores": 30,
+        "stations": 7, "events": 30, "ports_closed": 7,
+    },
+    "gateway_watch": True,
+    "threat": {
+        "unknown_vendor_warn": True,
+        "new_open_port": 15,
+        "weights": {
+            "untrusted": 25, "unknown": 10, "no_vendor": 15,
+            "random_mac": 15, "per_port": 6, "max_ports": 30,
+            "weak_svc": 10, "danger_port": 15,
+        },
+    },
 }
 
 VALID_LEVELS = {"info", "warn", "crit"}
@@ -97,6 +110,13 @@ class Config:
             issues.append(f"notify.min_level '{self.notify_min_level}' inválido")
         if not 0 < self.panel.get("port", 0) < 65536:
             issues.append("panel.port fuera de rango")
+        if not all(0 < int(self.get("intervalos", k, default=0)) for k in ("lan", "wifi", "sv")):
+            issues.append("intervalos.lan/wifi/sv deben ser > 0")
+        if self.get("battery", "pause_below", default=0) >= self.get("battery", "eco_below", default=0):
+            issues.append("battery.eco_below debe ser mayor que pause_below")
+        ports = self.scanner_ports
+        if not (isinstance(ports, list) and ports and all(0 < int(p) < 65536 for p in ports)):
+            issues.append("scanner.ports_scan: lista de puertos 1-65535")
         if self.get("pushes", "enabled", default=False):
             if not (self.get("pushes", "ntfy_url") or
                     (self.get("pushes", "telegram_token") and self.get("pushes", "telegram_chat"))):
