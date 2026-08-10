@@ -6,19 +6,25 @@ Endpoints REST:
   POST /api/login             -> {user, pass} -> token de sesión
   GET  /api/stats             -> KPI
   GET  /api/hosts             -> hosts + ports + threat score
-  GET  /api/hosts/<ip>        -> detalle de host (historia, puertos, eventos)
-  GET  /api/aps               -> APs
+  GET  /api/hosts/<ip>        -> detalle de host (historia, puertos, eventos, riesgo)
+  GET  /api/hosts/<ip>/risk   -> serie histórica de riesgo
+  GET  /api/aps               -> APs (+ riesgo por AP, twin)
   GET  /api/aps/signals       -> muestras RSSI por AP
   GET  /api/networks          -> redes memorizadas
   GET  /api/events?since=N    -> feed de eventos
   GET  /api/topology          -> interfaces
+  GET  /api/whitelist         -> whitelist
+  POST /api/whitelist         -> añade entrada
+  DELETE /api/whitelist?mac=  -> elimina entrada
   POST /api/scan              -> scan manual
-  GET  /export/hosts.csv      -> export
+  GET  /export/hosts.csv      -> export (CSV escapado)
   GET  /sse/events            -> flujo SSE de eventos (after every 3s)
   GET  /chart/signals.svg     -> gráfico SVG de señales
   GET  /chart/uptime.svg      -> gráfico SVG de uptime
+  GET  /chart/risk.svg        -> gráfico SVG de riesgo histórico
 Todo lo que no sea GET /login o /api/login requiere cabecera Authorization
-si `panel.auth=true` (config).
+si `panel.auth=true` (config). Los POST llevan protección CSRF (Origin) y el
+login tiene throttling por IP (5 fallos / 10 min).
 """
 import os
 import sys
@@ -38,6 +44,7 @@ import db  # noqa: E402
 import config  # noqa: E402
 import auth  # noqa: E402
 import log  # noqa: E402
+from threat import score_ap  # noqa: E402
 
 log.setup("web", level=20)
 LOGGER = log.get("web")
@@ -80,6 +87,9 @@ def _serve_json(self, obj, code=200):
     self.send_response(code)
     self.send_header("Content-Type", "application/json; charset=utf-8")
     self.send_header("Content-Length", str(len(body)))
+    self.send_header("X-Content-Type-Options", "nosniff")
+    self.send_header("X-Frame-Options", "DENY")
+    self.send_header("Cache-Control", "no-store")
     self.end_headers()
     self.wfile.write(body)
 
@@ -91,6 +101,8 @@ def _serve_file(self, path, ctype):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
@@ -171,7 +183,6 @@ def svg_uptime(con, ip, w=760, h=60):
     times = [p["ts"] for p in pts]
     t0, t1 = min(times), max(times)
     span = max(1, t1 - t0)
-    segs = pts[0]["ts"]
     block = []
     for p in pts:
         x = 10 + (p["ts"] - t0) / span * (w - 30)
@@ -180,9 +191,72 @@ def svg_uptime(con, ip, w=760, h=60):
     return '<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}">{blocks}</svg>'.format(w=w, h=h, blocks="".join(block))
 
 
+def svg_risk(con, ip, w=760, h=120):
+    """Serie histórica de riesgo de un host (tabla scores)."""
+    pts = db.score_history(con, ip, minutes=43200)
+    if not pts:
+        return '<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}"><text x="10" y="20" fill="#555" font-size="12">sin historial de riesgo</text></svg>'.format(w, h)
+    times = [p["ts"] for p in pts]
+    vals = [(p["score"] or 0) for p in pts]
+    t0, t1 = min(times), max(times)
+    span = max(1, t1 - t0)
+    path = []
+    for i, (x, y) in enumerate(zip([(t - t0) / span for t in times], vals)):
+        px = 10 + x * (w - 30)
+        py = h - 15 - (y / 100.0) * (h - 40)
+        path.append(f"{px:.1f},{py:.1f}")
+    d = "M" + " L".join(path)
+    rated = [f'<rect x="{10 + (t - t0) / span * (w - 30):.1f}" y="{h - 14}" width="2" height="4" fill="#e8c66a"/>'
+             for t, v in zip(times, vals) if v >= 30 and v < 60]
+    crit = [f'<rect x="{10 + (t - t0) / span * (w - 30):.1f}" y="{h - 8}" width="2" height="4" fill="#ff7a7a"/>'
+            for t, v in zip(times, vals) if v >= 60]
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}">
+  <polyline points="{path}" fill="none" stroke="#e8c66a" stroke-width="1.5"/>
+  {''.join(rated)}
+  {''.join(crit)}
+  <text x="{w - 80}" y="{h - 25}" fill="#444" font-size="9">0</text>
+  <text x="{w - 80}" y="{h - 65}" fill="#444" font-size="9">60 crit</text>
+</svg>"""
+
+
+# ------------------------------------------------------------------ seguridad
+_LOGIN_ATTEMPTS = {}
+_LOGIN_LOCK = threading.Lock()
+
+
+def _login_fails(ip):
+    """Intentos fallidos recientes de una IP (ventana 10 min)."""
+    with _LOGIN_LOCK:
+        cnt, ts = _LOGIN_ATTEMPTS.get(ip, (0, 0))
+        if time.time() - ts > 600:
+            return 0
+        return cnt
+
+
+def _login_fail(ip):
+    with _LOGIN_LOCK:
+        cnt, ts = _LOGIN_ATTEMPTS.get(ip, (0, time.time()))
+        _LOGIN_ATTEMPTS[ip] = (cnt + 1, ts or time.time())
+
+
+def _csrf_ok(handler):
+    """Rechaza POST cross-site: si viene Origin/Referer, debe ser el propio panel."""
+    if not Handler.auth_on:
+        return True
+    host = (handler.headers.get("Host") or "").split(":")[0]
+    for hdr in ("Origin", "Referer"):
+        v = (handler.headers.get(hdr) or "").strip()
+        if v:
+            import urllib.parse
+            ref_host = urllib.parse.urlparse(v).hostname or ""
+            if ref_host and ref_host != host:
+                return False
+    return True
+
+
 # ------------------------------------------------------------------ handler
 class Handler(BaseHTTPRequestHandler):
-    server_version = "wifi-zero/2.0"
+    server_version = "wifi-zero/3.0"
     auth_on = CFG.panel.get("auth", True)
     user = CFG.panel.get("user", "admin")
 
@@ -213,20 +287,29 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/hosts":
                 self._json(db.hosts_with_threat(con, CFG, None))
             elif path.startswith("/api/hosts/"):
-                ip = path.split("/")[3]
-                self._json(sv_hosts_detail(con, ip))
+                rest = path.split("/")[3:]
+                ip = rest[0]
+                if len(rest) > 1 and rest[1] == "risk":
+                    self._json({"risk": db.score_history(con, ip)})
+                else:
+                    self._json(sv_hosts_detail(con, ip))
             elif path == "/api/aps":
                 aps = db.all_aps(con)
+                dup_ssids = _twin_ssids(aps)
+                for a in aps:
+                    sc = score_ap(a, twin=(a.get("ssid") in dup_ssids), cfg=CFG)
+                    a["risk"] = sc["score"]
+                    a["tier"] = sc["tier"]
                 self._json({"aps": aps, "networks": db.networks(con),
                             "stations": db.stations_recent(con)})
             elif path == "/api/aps/signals":
-                bssid = q.get("bssid", [None])[0]
+                bssid = qs.get("bssid", [None])[0]
                 self._json({"signals": db.signal_trend(con, bssid)})
             elif path == "/api/whitelist":
                 self._json({"whitelist": db.whitelist(con)})
             elif path == "/api/events":
                 since = 0
-                try: since = int(q.get("since", ["0"])[0])
+                try: since = int(qs.get("since", ["0"])[0])
                 except ValueError: pass
                 self._json({"events": db.events_since(con, since, 300)})
             elif path == "/api/topology":
@@ -272,6 +355,8 @@ class Handler(BaseHTTPRequestHandler):
             self._chart_signal()
         elif path.startswith("/chart/uptime.svg"):
             self._chart_uptime()
+        elif path.startswith("/chart/risk.svg"):
+            self._chart_risk()
         else:
             self._json({"error": "not found"}, 404)
 
@@ -281,13 +366,14 @@ class Handler(BaseHTTPRequestHandler):
     def _export_csv(self):
         con = db.connect()
         hosts = db.hosts_with_threat(con, CFG, None)
+        q = lambda v: '"' + str(v or "").replace('"', '""') + '"'
         lines = ["ip;mac;vendor;hostname;os;state;score;tier;first_seen;last_seen;ports"]
         for h in hosts:
             ports = ";".join(f"{p['port']}/{p['service'] or '?'}" for p in h["ports"])
-            lines.append(f"{h['ip']};{h.get('mac') or ''};{h.get('vendor') or ''};"
-                         f"{h.get('hostname') or ''};{h.get('os') or ''};"
-                         f"{h['state']};{h['score']};{h['tier']};"
-                         f"{_fmt(h['first_seen'])};{_fmt(h['last_seen'])};{ports}")
+            lines.append(";".join(map(q, [
+                h["ip"], h.get("mac"), h.get("vendor"), h.get("hostname"), h.get("os"),
+                h["state"], h["score"], h["tier"],
+                _fmt(h["first_seen"]), _fmt(h["last_seen"]), ports])))
         body = ("\n".join(lines)).encode("utf-8-sig")
         self.send_response(200)
         self.send_header("Content-Type", "text/csv; charset=utf-8")
@@ -321,27 +407,70 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _chart_risk(self):
+        q = parse_qs(urlparse(self.path).query)
+        ip = q.get("ip", [""])[0]
+        con = db.connect()
+        body = svg_risk(con, ip).encode()
+        con.close()
+        self.send_response(200)
+        self.send_header("Content-Type", "image/svg+xml")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self):
         path = urlparse(self.path).path
         if not self._require():
             self._send401()
             return
+        if not _csrf_ok(self):
+            self._json({"error": "origen no permitido (CSRF)"}, 403)
+            return
         if path == "/api/login":
             try:
                 length = int(self.headers.get("Content-Length", 0))
                 data = json.loads(self.rfile.read(length))
-                if data.get("user") == self.user and verify(data.get("password", "")):
-                    tok = auth.create_token(self.user)
-                    self._json({"token": tok, "user": self.user})
-                else:
-                    self._json({"error": "credenciales inválidas"}, 401)
             except Exception as e:
                 self._json({"error": str(e)}, 400)
+                return
+            client = (self.client_address[0] if self.client_address else "?")
+            if _login_fails(client) >= 5:
+                self._json({"error": "demasiados intentos, espera 10 min"}, 429)
+                return
+            if data.get("user") == self.user and verify(data.get("password", "")):
+                tok = auth.create_token(self.user)
+                self._json({"token": tok, "user": self.user})
+            else:
+                _login_fail(client)
+                self._json({"error": "credenciales inválidas"}, 401)
         elif path == "/api/scan":
             _trigger_scan()
             self._json({"ok": True, "msg": "escaneo lanzado"})
         elif path == "/api/whitelist":
             self._whitelist_post()
+        else:
+            self._json({"error": "not found"}, 404)
+
+    def do_DELETE(self):
+        path = urlparse(self.path).path
+        if not self._require():
+            self._send401()
+            return
+        if not _csrf_ok(self):
+            self._json({"error": "origen no permitido (CSRF)"}, 403)
+            return
+        if path == "/api/whitelist":
+            q = parse_qs(urlparse(self.path).query)
+            mac = (q.get("mac", [""])[0] or "").lower()
+            if not mac:
+                self._json({"error": "mac requerido"}, 400)
+                return
+            con = db.connect()
+            con.execute("DELETE FROM whitelist WHERE mac=?", (mac,))
+            con.commit()
+            con.close()
+            self._json({"ok": True})
         else:
             self._json({"error": "not found"}, 404)
 
@@ -357,7 +486,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "mac requerido"}, 400)
             return
         con = db.connect()
-        db.add_whitelist(con, mac, data.get("label", ""), 1 if data.get("trusted", True) else 0)
+        db.add_whitelist(con, mac, data.get("label", "") or data.get("vendor", ""),
+                         1 if data.get("trusted", True) else 0)
         self._json({"ok": True})
         con.close()
 
@@ -370,6 +500,19 @@ def verify(pw):
     return auth.verify_password(pw, stored) if stored else False
 
 
+def _twin_ssids(aps):
+    """SSIDs que aparecen con varias BSSIDs (posible evil-twin)."""
+    seen, dups = set(), set()
+    for a in aps:
+        s = (a.get("ssid") or "").strip()
+        if not s or s.startswith("<"):
+            continue
+        if s in seen:
+            dups.add(s)
+        seen.add(s)
+    return dups
+
+
 def sv_hosts_detail(con, ip):
     row = db.all_hosts(con)
     hit = next((x for x in row if x.get("ip") == ip), None)
@@ -377,6 +520,7 @@ def sv_hosts_detail(con, ip):
         return None
     hit["history"] = db.host_history(con, ip)
     hit["ports"] = db.all_ports(con, ip=ip)
+    hit["risk"] = db.score_history(con, ip)
     hit["events"] = [e for e in db.all_events(con, 300) if e.get("ip") == ip]
     return hit
 

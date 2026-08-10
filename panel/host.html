@@ -16,6 +16,8 @@
   <div id="hostCard"></div>
   <h2>Gráfico de uptime</h2>
   <img id="upt" alt="uptime" style="width:100%;max-width:760px">
+  <h2>Riesgo histórico</h2>
+  <img id="riskImg" alt="riesgo" style="width:100%;max-width:760px">
   <h2>Puertos / servicios</h2>
   <table id="tPorts"><thead><tr><th>Puerto</th><th>Proto</th><th>Servicio</th><th>Producto</th><th>Versión</th></tr></thead><tbody></tbody></table>
   <h2>Eventos de este host</h2>
@@ -29,6 +31,14 @@ async function getJSON(url) {
   if (r.status === 401) { location.href = "/login"; throw new Error("401"); }
   return r.json();
 }
+async function postJSON(url, body, method = "POST") {
+  const r = await fetch(url, {
+    method,
+    headers: { "Content-Type": "application/json", ...(token() ? { Authorization: "Bearer " + token() } : {}) },
+    body: method === "POST" ? JSON.stringify(body || {}) : undefined,
+  });
+  return r.json();
+}
 function esc(s){const d=document.createElement("div");d.textContent=s??"";return d.innerHTML;}
 
 (async function () {
@@ -36,13 +46,18 @@ function esc(s){const d=document.createElement("div");d.textContent=s??"";return
   if (!ip) return;
   const h = await getJSON("/api/hosts/" + encodeURIComponent(ip));
   if (!h) { return; }
+  const trust = h.trusted === true ? '<span class="badge b-online">confiable</span>'
+    : h.trusted === false ? '<span class="badge b-crit">no confiable</span>'
+    : '<span class="badge b-warn">desconocido</span>';
   $("#hostCard").innerHTML = `
     <div class="card">
-      <div class="n">${h.ip}</div>
+      <div class="n">${h.ip} <span class="tier" style="font-size:.9em">riesgo ${h.score ?? "?"} · ${h.tier || "?"}</span></div>
       <div class="l">MAC ${h.mac || "—"} · ${esc(h.vendor) || "?"} ·
-        ${h.state ? "online" : "offline"} · ${esc(h.os || "OS ?")}</div>
+        ${h.state ? "online" : "offline"} · ${trust}</div>
+      <div id="hostActions" class="sub" style="margin-top:6px"></div>
     </div>`;
   $("#upt").src = "/chart/uptime.svg?ip=" + encodeURIComponent(ip) + "&token=" + encodeURIComponent(token());
+  $("#riskImg").src = "/chart/risk.svg?ip=" + encodeURIComponent(ip) + "&token=" + encodeURIComponent(token());
   $("#tPorts tbody").innerHTML = (h.ports || []).map((p) => `<tr>
     <td>${p.port}</td><td>${p.proto}</td><td>${esc(p.service) || "?"}</td>
     <td>${esc(p.product) || "—"}</td><td>${esc(p.version) || "—"}</td></tr>`).join("") ||
@@ -51,6 +66,34 @@ function esc(s){const d=document.createElement("div");d.textContent=s??"";return
     .map((e) => `<li><span class="ts">${new Date(e.ts*1000).toTimeString().slice(0,8)}</span>
       <span class="sev ${e.level}">${e.level.toUpperCase()}</span>&nbsp;${esc(e.message)}</li>`).join("") ||
     '<li class="muted">sin eventos</li>';
+
+  const act = $("#hostActions");
+  if (!h.mac) { act.textContent = "sin MAC para whitelist"; return; }
+  const [wl] = await Promise.all([getJSON("/api/whitelist")]);
+  const known = (wl.whitelist || []).find((w) => w.mac === h.mac);
+  if (known) {
+    act.innerHTML = `<button class="btn" id="btnUntrust">marcar ${known.trusted ? "no confiable" : "confiable"}</button>
+      <button class="btn" id="btnDelWL">quitar de whitelist</button>`;
+    $("#btnUntrust").onclick = async () => {
+      await postJSON("/api/whitelist", { mac: h.mac, label: known.label, trusted: !known.trusted });
+      location.reload();
+    };
+    $("#btnDelWL").onclick = async () => {
+      await postJSON("/api/whitelist?mac=" + encodeURIComponent(h.mac), {}, "DELETE");
+      location.reload();
+    };
+  } else {
+    act.innerHTML = `<button class="btn" id="btnTrust">confiar</button>
+      <button class="btn" id="btnBlock">bloquear (no confiable)</button>`;
+    $("#btnTrust").onclick = async () => {
+      await postJSON("/api/whitelist", { mac: h.mac, label: h.vendor || "", trusted: true });
+      location.reload();
+    };
+    $("#btnBlock").onclick = async () => {
+      await postJSON("/api/whitelist", { mac: h.mac, label: h.vendor || "", trusted: false });
+      location.reload();
+    };
+  }
 })();
 </script>
 </body>

@@ -22,6 +22,7 @@
   <div class="filterbar">
     <input id="q" type="search" placeholder="buscar: ip · mac · vendor">
     <button class="btn" id="btnOnlyCrit">Solo críticos</button>
+    <button class="btn" id="btnEvCrit">Eventos: solo alertas</button>
   </div>
 
   <h2>Red · hosts y riesgo</h2>
@@ -33,10 +34,18 @@
     <div>
       <h2>Wi‑Fi · APs visibles</h2>
       <table id="tAP"><thead><tr>
-        <th>SSID</th><th>BSSID</th><th>CH</th><th>RSSI</th><th>Cifrado</th><th>Fabricante</th><th>Señal</th>
+        <th>SSID</th><th>BSSID</th><th>CH</th><th>RSSI</th><th>Cifrado</th><th>Riesgo</th><th>Fabricante</th><th>Señal</th>
       </tr></thead><tbody></tbody></table>
       <h2>Redes memorizadas</h2>
       <table id="tNets"><thead><tr><th>SSID</th><th>BSSID</th><th>veces</th></tr></thead><tbody></tbody></table>
+      <h2>Whitelist</h2>
+      <table id="tWL"><thead><tr><th>MAC</th><th>Etiqueta</th><th>Confianza</th><th></th></tr></thead><tbody></tbody></table>
+      <form id="wlForm" class="filterbar">
+        <input id="wlMac" type="text" placeholder="aa:bb:cc:dd:ee:ff">
+        <input id="wlLabel" type="text" placeholder="etiqueta (opcional)">
+        <select id="wlTrust"><option value="1">confiable</option><option value="0">no confiable</option></select>
+        <button class="btn" type="submit">Añadir</button>
+      </form>
     </div>
     <div>
       <h2>Eventos en vivo <span id="liveState" class="sub"></span></h2>
