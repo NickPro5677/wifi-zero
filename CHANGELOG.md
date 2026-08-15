@@ -1,5 +1,26 @@
 # Changelog
 
+## [3.1.0] - panel v3.1 + correcciones de motor
+### Correcciones
+- SSE no recibía eventos del monitor (otro proceso): bomba que lee SQLite y reemite.
+- Fuga de colas SSE al desconectar el cliente.
+- `threat._cfg` ignoraba `config.Config` → los pesos de `config.json` no se aplicaban.
+- WPA3-SAE se clasificaba como OPEN si Android no ponía el literal `WPA3`.
+- `battery.pause_below` estaba documentado y no pausaba el monitor.
+- `/host.html` y estáticos no estaban en la allowlist de auth (401 al abrir detalle).
+- `start_all.sh` hacía POST `/api/scan` sin token: ahora se acepta desde localhost.
+
+### Optimización
+- `/api/dashboard` y `/api/health` (un round-trip para el panel).
+- `hosts_with_threat` agrupa puertos por IP (O(n) en vez de n×m).
+- `record_scores()` inserta el histórico de riesgo en un solo commit.
+- SQLite: `timeout`, `synchronous=NORMAL`, `temp_store=MEMORY`.
+- Caché corta de `app.js`/`style.css`.
+
+### Panel
+- GUI nueva: sidebar, vistas (resumen, hosts, radio, topología, eventos, whitelist),
+  drawer de host, toasts de alerta, heatmap de canales, atajos de teclado.
+
 ## [3.0.0] - mejora en profundidad
 ### Correcciones (bugs reales)
 - `db.upsert_ap`: INSERT con 14 args para 13 placeholders → los APs nuevos

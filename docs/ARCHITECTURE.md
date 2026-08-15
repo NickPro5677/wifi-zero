@@ -27,6 +27,8 @@ corre íntegramente en Termux (Android) **sin root**. Todo en Python 3.14 stdlib
 - `core/notify.py` — termux-notification local + push opcional ntfy/Telegram.
 - `core/auth.py` — scrypt (hashlib, sin bcrypt) + tokens HMAC-SHA256 con expiración.
 - `core/server.py` — panel HTTP stdlib: REST + SSE + SVG. Auth opcional.
+  SSE relee SQLite (`_sse_pump`) porque el monitor es otro proceso.
+  `/api/dashboard` y `/api/health` alimentan la GUI v3.1.
 - `scanner/lan_scan.py` — detección hosts por `ip neigh` (tabla ARP) + TCP
   connect; nmap -sV opcional; NSE broadcast (DNS-SD/SSDP).
 - `scanner/wifi_track.py` — Termux:API `wifi-scaninfo` + `connectioninfo` con

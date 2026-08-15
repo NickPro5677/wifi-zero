@@ -1,7 +1,7 @@
 # WiFi-ZERO
 
 Vigilancia continua de **tu red local** desde **Android/Termux sin root**
-(probado en Redmi Note 11, Android 11) — v3.
+(probado en Redmi Note 11, Android 11) — v3.1.
 
 Rastrea dispositivos, redes, señales y cambios de seguridad en tu Wi‑Fi,
 almacena todo en SQLite (migrado) y publica un panel web local con **login**,
@@ -45,19 +45,16 @@ Panel: `http://127.0.0.1:8788`  (usuario por defecto `admin`, la que fijes).
 | Historia | `hosts_history`/`signals`/`scores` | uptime, señal y evolución de riesgo por host/AP |
 | Higiene | WAL + `prune()` por retención | la DB no crece sin límite (config `retention`) |
 
-## Panel (F4)
+## Panel (v3.1)
 
-- **Login** (scrypt, tokens HMAC, 30 min, throttling 5/10min, CSRF) — activo
-  por defecto; el SSE y las APIs llevan el token en cabecera (no en la URL).
-- **Dashboard**: KPIs, tabla de hosts ordenable por riesgo, filtro de búsqueda,
-  solo críticos.
-- **detalle de host** (`/host.html?ip=…`): historia, puertos, eventos, **riesgo
-  histórico** y acciones de confianza directas (confiar / bloquear / quitar).
-- **Whitelist** gestionable desde la consola (añadir, etiquetar, quitar).
-- **APs**: canal, banda, RSSI, cifrado, **riesgo por AP**; clic → gráfico de señal.
-- **Redes memorizadas** y **estación actual** (link_speed, network_id).
-- **Eventos en vivo** vía SSE (fetch-streaming) con filtro «solo alertas».
-- **Export** CSV (valores escapados, compatible con hojas de cálculo).
+- **Login** (scrypt, tokens HMAC, 30 min, throttling 5/10min, CSRF).
+- **Resumen**: KPIs, riesgo de red, enlace actual, hosts expuestos, feed vivo.
+- **Hosts** ordenables; clic abre un **drawer** (puertos, uptime, riesgo, whitelist).
+- **Radio**: heatmap de canales + APs (OPEN/WPA3/twin) y redes memorizadas.
+- **Topología**: nodos por riesgo + interfaces locales.
+- **Eventos SSE** reales (el servidor relee SQLite; el monitor es otro proceso).
+- Atajos: `/` buscar · `s` escanear · `1–5` vistas · `Esc` cierra drawer.
+- **Export** CSV (RFC 4180).
 
 ## Configuración
 
