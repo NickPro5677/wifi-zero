@@ -58,7 +58,7 @@ class TestCapabilitiesParsing(unittest.TestCase):
 
     def test_wpa3(self):
         pc = wifi_track.parse_capabilities("[RSN-SAE-CCMP][ESS]")
-        self.assertEqual(pc["encryption"], "OPEN")  # no contiene literal WPA3
+        self.assertEqual(pc["encryption"], "WPA3")  # SAE = WPA3-Personal
         pc2 = wifi_track.parse_capabilities("[WPA3-SAE][RSN-SAE-CCMP][ESS]")
         self.assertEqual(pc2["encryption"], "WPA3")
 
@@ -85,6 +85,12 @@ class TestRulesEngine(unittest.TestCase):
         s2 = score_host({"vendor": "Nokia Shanghai Bell"}, [], trusted=True, cfg={})
         self.assertLess(s2["score"], 20)
         self.assertEqual(s2["tier"], "ok")
+
+    def test_weights_from_config_object(self):
+        from core.threat import score_host
+        cfg = config.Config(data={"threat": {"weights": {"untrusted": 40, "no_vendor": 0}}})
+        s = score_host({"vendor": "X", "mac": "dc:a6:32:5c:01:02"}, [], trusted=False, cfg=cfg)
+        self.assertEqual(s["score"], 40)
 
 
 class TestWifiTrackHelpers(unittest.TestCase):
@@ -180,6 +186,16 @@ class TestRulesV3(unittest.TestCase):
         rules_fired = {f[0] for f in fired}
         self.assertIn("ap_open", rules_fired)
         self.assertIn("new_ap", rules_fired)
+
+
+class TestRecordScoresBatch(unittest.TestCase):
+    def test_batch(self):
+        con = db.connect(db_path=":memory:")
+        db.record_scores(con, [
+            {"ip": "1.1.1.1", "score": 10, "tier": "ok"},
+            {"ip": "2.2.2.2", "score": 70, "tier": "crit"},
+        ])
+        self.assertEqual(con.execute("SELECT COUNT(*) AS c FROM scores").fetchone()["c"], 2)
 
 
 class TestPrune(unittest.TestCase):
