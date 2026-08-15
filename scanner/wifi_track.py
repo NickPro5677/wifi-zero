@@ -45,14 +45,17 @@ def parse_capabilities(caps):
         for m in str(caps).replace("[", " ").replace("]", " ").split():
             if m:
                 flags.add(m)
-        if "WPA3" in caps:
+        # SAE = WPA3-Personal aunque Android no ponga el literal "WPA3"
+        if "WPA3" in caps or "SAE" in caps:
             enc = "WPA3"
-        elif "WPA2" in caps:
+        elif "WPA2" in caps or "RSN" in caps:
             enc = "WPA2"
         elif "WPA" in caps:
             enc = "WPA"
-        if "CCMP" in caps:
-            cipher = "CCMP"
+        elif "WEP" in caps:
+            enc = "WEP"
+        if "CCMP" in caps or "GCMP" in caps:
+            cipher = "CCMP" if "CCMP" in caps else "GCMP"
         if "TKIP" in caps:
             cipher = cipher or "TKIP"
     return {"encryption": enc, "cipher": cipher, "raw": caps, "flags": flags}
