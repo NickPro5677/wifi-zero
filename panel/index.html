@@ -4,55 +4,155 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>wifi-zero · consola</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<header>
-  <h1>WIFI-ZERO</h1>
-  <span class="sub">vigilancia de red · sin root</span>
-  <span class="spacer"></span>
-  <span class="sub" id="ver"></span>
-  <button class="btn" id="btnScan">⚡ Escanear</button>
-  <button class="btn" id="btnExport">⇩ CSV</button>
-  <button class="btn" id="btnLogout">Salir</button>
-</header>
-<main>
-  <div class="cards" id="cards"></div>
-
-  <div class="filterbar">
-    <input id="q" type="search" placeholder="buscar: ip · mac · vendor">
-    <button class="btn" id="btnOnlyCrit">Solo críticos</button>
-    <button class="btn" id="btnEvCrit">Eventos: solo alertas</button>
-  </div>
-
-  <h2>Red · hosts y riesgo</h2>
-  <table id="tHosts"><thead><tr>
-    <th>IP</th><th>MAC</th><th>Fabricante</th><th>Confianza</th><th>Riesgo</th><th>Estado</th><th>Última</th><th>Puertos</th>
-  </tr></thead><tbody></tbody></table>
-
-  <div class="grid2">
-    <div>
-      <h2>Wi‑Fi · APs visibles</h2>
-      <table id="tAP"><thead><tr>
-        <th>SSID</th><th>BSSID</th><th>CH</th><th>RSSI</th><th>Cifrado</th><th>Riesgo</th><th>Fabricante</th><th>Señal</th>
-      </tr></thead><tbody></tbody></table>
-      <h2>Redes memorizadas</h2>
-      <table id="tNets"><thead><tr><th>SSID</th><th>BSSID</th><th>veces</th></tr></thead><tbody></tbody></table>
-      <h2>Whitelist</h2>
-      <table id="tWL"><thead><tr><th>MAC</th><th>Etiqueta</th><th>Confianza</th><th></th></tr></thead><tbody></tbody></table>
-      <form id="wlForm" class="filterbar">
-        <input id="wlMac" type="text" placeholder="aa:bb:cc:dd:ee:ff">
-        <input id="wlLabel" type="text" placeholder="etiqueta (opcional)">
-        <select id="wlTrust"><option value="1">confiable</option><option value="0">no confiable</option></select>
-        <button class="btn" type="submit">Añadir</button>
-      </form>
+<div class="app">
+  <aside class="side glass">
+    <div class="brand">
+      <span class="pulse-dot" id="liveDot"></span>
+      <div>
+        <h1>WIFI-ZERO</h1>
+        <small id="ver">v3.1</small>
+      </div>
     </div>
-    <div>
-      <h2>Eventos en vivo <span id="liveState" class="sub"></span></h2>
-      <ul class="ev-log" id="events"></ul>
+    <nav id="nav">
+      <button data-view="overview" class="active">Resumen</button>
+      <button data-view="hosts">Hosts</button>
+      <button data-view="radio">Radio</button>
+      <button data-view="topo">Topología</button>
+      <button data-view="events">Eventos</button>
+      <button data-view="list">Lista blanca</button>
+    </nav>
+    <div class="side-foot">
+      <div class="health" id="healthBox">—</div>
+      <button class="btn" id="btnScan">Escanear</button>
+      <button class="btn" id="btnExport">CSV</button>
+      <button class="btn ghost" id="btnLogout">Salir</button>
     </div>
-  </div>
-</main>
+  </aside>
+
+  <main>
+    <header class="topbar glass">
+      <input id="q" type="search" placeholder="Buscar IP, MAC, vendor…  /" autocomplete="off">
+      <label class="tog"><input type="checkbox" id="onlyCrit"> Solo críticos</label>
+      <label class="tog"><input type="checkbox" id="evCrit"> Alertas</label>
+      <span class="spacer"></span>
+      <span class="live" id="liveState">SSE · —</span>
+    </header>
+
+    <section id="view-overview" class="view">
+      <div class="cards" id="cards"></div>
+      <div class="grid2">
+        <div class="glass panel">
+          <h2>Riesgo de la red</h2>
+          <div id="riskOverview"></div>
+        </div>
+        <div class="glass panel">
+          <h2>Enlace actual</h2>
+          <div id="stationBox" class="muted">sin estación</div>
+        </div>
+      </div>
+      <div class="glass panel">
+        <h2>Hosts más expuestos</h2>
+        <div id="hotHosts"></div>
+      </div>
+      <div class="glass panel">
+        <h2>Eventos recientes</h2>
+        <ul class="ev-log" id="eventsMini"></ul>
+      </div>
+    </section>
+
+    <section id="view-hosts" class="view hidden">
+      <div class="glass panel">
+        <h2>Red · hosts y riesgo</h2>
+        <div class="table-wrap">
+          <table id="tHosts">
+            <thead><tr>
+              <th data-sort="ip">IP</th>
+              <th data-sort="mac">MAC</th>
+              <th data-sort="vendor">Fabricante</th>
+              <th data-sort="trusted">Confianza</th>
+              <th data-sort="score">Riesgo</th>
+              <th data-sort="state">Estado</th>
+              <th>Última</th>
+              <th>Puertos</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-radio" class="view hidden">
+      <div class="glass panel">
+        <h2>Ocupación de canales</h2>
+        <div id="heat" class="heat"></div>
+      </div>
+      <div class="glass panel">
+        <h2>APs visibles</h2>
+        <div class="table-wrap">
+          <table id="tAP">
+            <thead><tr>
+              <th>SSID</th><th>BSSID</th><th>CH</th><th>Banda</th>
+              <th>RSSI</th><th>Cifrado</th><th>Riesgo</th><th>Vendor</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="glass panel">
+        <h2>Redes memorizadas</h2>
+        <div class="table-wrap">
+          <table id="tNets"><thead><tr><th>SSID</th><th>BSSID</th><th>veces</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-topo" class="view hidden">
+      <div class="glass panel">
+        <h2>Interfaces y mapa</h2>
+        <div id="topoIfs"></div>
+        <div id="topoMap" class="topo"></div>
+      </div>
+    </section>
+
+    <section id="view-events" class="view hidden">
+      <div class="glass panel">
+        <h2>Eventos en vivo</h2>
+        <ul class="ev-log tall" id="events"></ul>
+      </div>
+    </section>
+
+    <section id="view-list" class="view hidden">
+      <div class="glass panel">
+        <h2>Whitelist</h2>
+        <form id="wlForm" class="filterbar">
+          <input id="wlMac" placeholder="aa:bb:cc:dd:ee:ff" required>
+          <input id="wlLabel" placeholder="etiqueta">
+          <select id="wlTrust">
+            <option value="1">confiable</option>
+            <option value="0">no confiable</option>
+          </select>
+          <button class="btn primary" type="submit">Añadir</button>
+        </form>
+        <div class="table-wrap">
+          <table id="tWL"><thead><tr><th>MAC</th><th>Etiqueta</th><th>Confianza</th><th></th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<aside class="drawer glass hidden" id="drawer">
+  <header>
+    <strong id="dTitle">Host</strong>
+    <button class="btn ghost" id="dClose">Cerrar</button>
+  </header>
+  <div id="dBody"></div>
+</aside>
+<div class="toasts" id="toasts"></div>
 <script src="/app.js"></script>
 </body>
 </html>
