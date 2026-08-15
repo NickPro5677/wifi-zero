@@ -57,6 +57,9 @@ def _deep_merge(base, over):
 class Config:
     def __init__(self, data=None, path=CONFIG_PATH):
         self.path = path
+        if data is not None:
+            self.data = _deep_merge(DEFAULTS, data)
+            return
         loaded = {}
         if os.path.exists(path):
             try:

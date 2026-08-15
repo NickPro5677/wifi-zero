@@ -24,8 +24,11 @@ WEAK_SERVICES = ("telnet", "ftp", "upnp", "dns", "snmp", "tftp", "http-alt")
 
 
 def _cfg(cfg, *keys, default=None):
-    if not cfg:
+    """Lee pesos tanto de un dict como de `config.Config` (antes se ignoraban)."""
+    if cfg is None:
         return default
+    if not isinstance(cfg, dict) and hasattr(cfg, "get"):
+        return cfg.get(*keys, default=default)
     cur = cfg
     for k in keys:
         if not isinstance(cur, dict) or k not in cur:

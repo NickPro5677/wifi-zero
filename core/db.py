@@ -144,10 +144,12 @@ def _apply_schema(con, idx):
 
 def connect(db_path=DB_PATH):
     os.makedirs(DATA_DIR, exist_ok=True)
-    con = sqlite3.connect(db_path)
+    con = sqlite3.connect(db_path, timeout=8, check_same_thread=False)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA busy_timeout=5000")
+    con.execute("PRAGMA synchronous=NORMAL")
+    con.execute("PRAGMA temp_store=MEMORY")
     con.executescript(
         "CREATE TABLE IF NOT EXISTS migrations (version INTEGER PRIMARY KEY, applied_at INTEGER);"
     )
@@ -373,10 +375,22 @@ def stats(con):
     first = con.execute("SELECT MIN(first_seen) AS m FROM hosts").fetchone()["m"]
     last = con.execute("SELECT MAX(ts) AS m FROM runs").fetchone()["m"]
     version = con.execute("SELECT COALESCE(MAX(version),0) AS v FROM migrations").fetchone()["v"]
+    crit_ev = con.execute(
+        "SELECT COUNT(*) AS c FROM events WHERE level='crit' AND ts>=?",
+        (now() - 86400,),
+    ).fetchone()["c"]
+    warn_ev = con.execute(
+        "SELECT COUNT(*) AS c FROM events WHERE level='warn' AND ts>=?",
+        (now() - 86400,),
+    ).fetchone()["c"]
+    open_aps = con.execute(
+        "SELECT COUNT(*) AS c FROM aps WHERE encryption IS NULL OR encryption='' OR encryption='OPEN'"
+    ).fetchone()["c"]
     return {
         "hosts": hosts, "up": up, "aps": aps, "events": ev,
         "port_ips": port_ips, "first_scan": first, "last_run": last,
-        "version": version,
+        "version": version, "crit_today": crit_ev, "warn_today": warn_ev,
+        "open_aps": open_aps,
     }
 
 
@@ -419,12 +433,15 @@ def hosts_with_threat(con, cfg=None, ports=None):
     from threat import score_host
     hosts = all_hosts(con)
     pl = (ports or all_ports(con))
+    by_ip = {}
+    for p in pl:
+        by_ip.setdefault(p.get("ip"), []).append(p)
     by_mac = {wh["mac"]: wh for wh in whitelist(con)}
     out = []
     for h in hosts:
         tm = by_mac.get((h.get("mac") or "").lower())
         trusted = bool(tm["trusted"]) if tm else None
-        hp = [p for p in pl if p.get("ip") == h["ip"]]
+        hp = by_ip.get(h["ip"], [])
         sc = score_host(h, hp, trusted, cfg)
         out.append({**h, "trusted": trusted, "label": (tm or {}).get("label", ""),
                     "score": sc["score"], "tier": sc["tier"], "ports": hp})
@@ -437,6 +454,18 @@ def record_score(con, ip, score, tier):
     """Persiste un punto de la serie de riesgo de un host (para /chart/risk)."""
     con.execute("INSERT INTO scores(ts,ip,score,tier) VALUES (?,?,?,?)",
                 (now(), ip, int(score), tier))
+    con.commit()
+
+
+def record_scores(con, rows):
+    """Inserta varios puntos de riesgo en una sola transacción."""
+    if not rows:
+        return
+    t = now()
+    con.executemany(
+        "INSERT INTO scores(ts,ip,score,tier) VALUES (?,?,?,?)",
+        [(t, r["ip"], int(r["score"]), r["tier"]) for r in rows],
+    )
     con.commit()
 
 

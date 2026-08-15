@@ -88,15 +88,18 @@ class Monitor:
 
     # ------------------------------------------------------------- power gate
     def _power_profile(self):
-        """Devuelve (eco, pct): eco=true si desenchufado por debajo de eco_below."""
+        """Devuelve (pause, eco, pct). pause si desenchufado bajo pause_below."""
         charging, pct = battery_flush()
-        eco = (not charging and pct <= self.cfg.battery.get("eco_below", 35))
-        if eco and not self._eco:
+        pause = (not charging and pct <= int(self.cfg.battery.get("pause_below", 15)))
+        eco = (not charging and pct <= int(self.cfg.battery.get("eco_below", 35)))
+        if pause:
+            LOGGER.warning("batería %d%% desenchufada — pausa (pause_below)", pct)
+        elif eco and not self._eco:
             LOGGER.warning("batería %d%% desenchufada — modo eco (intervalos ×2, sin -sV)", pct)
         elif self._eco and not eco:
             LOGGER.info("batería recuperada (%d%%) — modo normal", pct)
         self._eco = eco
-        return eco
+        return pause, eco, pct
 
     # -------------------------------------------------------------- LAN cycle
     def _cycle_lan(self, deep_sv):
@@ -168,9 +171,9 @@ class Monitor:
         except Exception as e:
             LOGGER.error("scores err %r", e)
             return
-        for h in hosts:
-            if h.get("state") or h.get("score", 0) >= 30:
-                db.record_score(self.con, h["ip"], h["score"], h["tier"])
+        batch = [h for h in hosts if h.get("state") or h.get("score", 0) >= 30]
+        if batch:
+            db.record_scores(self.con, batch)
 
     # ------------------------------------------------------------- WiFi
     def _cycle_wifi(self):
@@ -220,7 +223,10 @@ class Monitor:
             if not wifi_gate():
                 LOGGER.info("sin WiFi (supplicant inactive) — pausado")
             else:
-                eco = self._power_profile()
+                pause, eco, _pct = self._power_profile()
+                if pause:
+                    time.sleep(15)
+                    continue
                 lan_iv = self.cfg.lan_interval * (2 if eco else 1)
                 sv_iv = self.cfg.sv_interval * (2 if eco else 1)
                 if t >= nxt.get("lan", 0):
