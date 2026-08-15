@@ -13,7 +13,7 @@
     "bind": "0.0.0.0",
     "auth": true,
     "user": "admin",
-    "password": "N1pi3E/ygXyBzZrqykBvlQ==|+Bn6/JG7NAav3zamkGOky7bbZFkAfEUUp02tjKMtuG4="
+    "password": ""
   },
   "battery": {
     "eco_below": 35,
@@ -21,22 +21,8 @@
   },
   "scanner": {
     "ports_scan": [
-      22,
-      53,
-      80,
-      123,
-      443,
-      445,
-      554,
-      1900,
-      5060,
-      5353,
-      8000,
-      8080,
-      8443,
-      8888,
-      9090,
-      49152
+      22, 53, 80, 123, 443, 445, 554, 1900, 5060, 5353,
+      8000, 8080, 8443, 8888, 9090, 49152
     ],
     "nse_broadcast": true,
     "service_versions": true
