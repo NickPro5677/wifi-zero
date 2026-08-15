@@ -55,23 +55,98 @@ BIND = CFG.panel.get("bind", "0.0.0.0")
 PANEL = os.path.join(BASE_DIR, "panel")
 PIDFILE = os.path.join(BASE_DIR, "logs", "server.pid")
 
-# SSE broadcast
+# SSE broadcast (el monitor es otro proceso: se reinyecta desde SQLite)
 _SUBSCRIBERS = set()
 _SUB_LOCK = threading.Lock()
+_SSE_LAST_ID = 0
+
+STATIC_PUBLIC = {
+    "/", "", "/login", "/login.html", "/host.html",
+    "/app.js", "/style.css", "/favicon.svg", "/api/login",
+}
+
+MONITOR_PID = os.path.join(BASE_DIR, "logs", "monitor.pid")
 
 
 def _broadcast(event, data):
-    payload = f"event: {event}\ndata: {json.dumps(data)}\n\n"
+    payload = f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
     with _SUB_LOCK:
+        dead = []
         for q in list(_SUBSCRIBERS):
             try:
                 q.put_nowait(payload)
             except Exception:
-                pass
+                dead.append(q)
+        for q in dead:
+            _SUBSCRIBERS.discard(q)
 
 
 def _notify_sse(rule, level, message, ip=None, mac=None):
     _broadcast("event", {"rule": rule, "level": level, "message": message, "ts": int(time.time())})
+
+
+def _sse_pump():
+    """Lee eventos nuevos de la DB y los emite a los clientes (proceso separado)."""
+    global _SSE_LAST_ID
+    try:
+        con = db.connect()
+        _SSE_LAST_ID = db.last_event_id(con)
+        con.close()
+    except Exception:
+        _SSE_LAST_ID = 0
+    while True:
+        time.sleep(2)
+        try:
+            con = db.connect()
+            evs = db.events_since(con, _SSE_LAST_ID, 80)
+            con.close()
+            for e in evs:
+                _SSE_LAST_ID = max(_SSE_LAST_ID, int(e.get("id") or 0))
+                _broadcast("event", e)
+        except Exception:
+            pass
+
+
+def _pid_alive(path):
+    try:
+        pid = int(open(path).read().strip())
+        os.kill(pid, 0)
+        return pid
+    except Exception:
+        return None
+
+
+def _health():
+    charging, pct = True, None
+    try:
+        import json as _j
+        bat = "/data/data/com.termux/files/usr/bin/termux-battery-status"
+        out = __import__("subprocess").run([bat], capture_output=True, text=True, timeout=3)
+        if out.returncode == 0 and out.stdout.strip():
+            d = _j.loads(out.stdout)
+            charging = d.get("status") == "CHARGING"
+            pct = d.get("percentage")
+    except Exception:
+        pass
+    con = db.connect()
+    st = db.stats(con)
+    last_st = None
+    try:
+        rows = db.stations_recent(con, 1)
+        last_st = rows[-1] if rows else None
+    except Exception:
+        last_st = None
+    con.close()
+    return {
+        "ok": True,
+        "monitor_pid": _pid_alive(MONITOR_PID),
+        "server_pid": os.getpid(),
+        "last_run": st.get("last_run"),
+        "battery_pct": pct,
+        "charging": charging,
+        "station": last_st,
+        "version": st.get("version"),
+    }
 
 
 # tecla de sesión compartida (mismo proceso)
@@ -94,7 +169,7 @@ def _serve_json(self, obj, code=200):
     self.wfile.write(body)
 
 
-def _serve_file(self, path, ctype):
+def _serve_file(self, path, ctype, cache="no-store"):
     try:
         with open(path, "rb") as f:
             data = f.read()
@@ -103,7 +178,7 @@ def _serve_file(self, path, ctype):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache)
         self.end_headers()
         self.wfile.write(data)
     except FileNotFoundError:
@@ -128,21 +203,27 @@ def _send_sse(self, q):
     self.send_header("Content-Type", "text/event-stream")
     self.send_header("Cache-Control", "no-cache")
     self.send_header("Connection", "keep-alive")
+    self.send_header("X-Accel-Buffering", "no")
     self.end_headers()
-    self.wfile.write(b"retry: 3000\n\n")
-    self.wfile.flush()
-    while True:
-        try:
-            msg = q.get(timeout=3)
-            self.wfile.write(msg.encode())
-            self.wfile.flush()
-        except Exception:
-            # heartbeat/comentar para que el cliente no cierre
+    try:
+        self.wfile.write(b"retry: 3000\n\n")
+        self.wfile.flush()
+        while True:
             try:
-                self.wfile.write(b": ping\n\n")
+                msg = q.get(timeout=3)
+                self.wfile.write(msg.encode())
                 self.wfile.flush()
+            except queue.Empty:
+                try:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                except Exception:
+                    break
             except Exception:
                 break
+    finally:
+        with _SUB_LOCK:
+            _SUBSCRIBERS.discard(q)
 
 
 # ------------------------------------------------------------------ data API
@@ -256,7 +337,7 @@ def _csrf_ok(handler):
 
 # ------------------------------------------------------------------ handler
 class Handler(BaseHTTPRequestHandler):
-    server_version = "wifi-zero/3.0"
+    server_version = "wifi-zero/3.1"
     auth_on = CFG.panel.get("auth", True)
     user = CFG.panel.get("user", "admin")
 
@@ -266,8 +347,13 @@ class Handler(BaseHTTPRequestHandler):
         if not self.auth_on:
             return True
         p = urlparse(self.path).path
-        if p in ("/", "", "/login", "/app.js", "/style.css", "/api/login"):
+        if p in STATIC_PUBLIC:
             return True
+        # escaneo local (start_all.sh) sin token
+        if p == "/api/scan" and self.command == "POST":
+            ip = (self.client_address or [""])[0]
+            if ip in ("127.0.0.1", "::1"):
+                return True
         return bool(authorized(self, self.user))
 
     def _json(self, obj, code=200):
@@ -284,6 +370,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/stats":
                 self._json(db.stats(con))
+            elif path == "/api/health":
+                self._json(_health())
+            elif path == "/api/dashboard":
+                self._json(_dashboard(con))
             elif path == "/api/hosts":
                 self._json(db.hosts_with_threat(con, CFG, None))
             elif path.startswith("/api/hosts/"):
@@ -334,12 +424,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path in ("/", ""):
             self._file(os.path.join(PANEL, "index.html"), "text/html; charset=utf-8")
-        elif path == "/login":
+        elif path in ("/login", "/login.html"):
             self._file(os.path.join(PANEL, "login.html"), "text/html; charset=utf-8")
         elif path == "/app.js":
-            self._file(os.path.join(PANEL, "app.js"), "text/javascript; charset=utf-8")
+            _serve_file(self, os.path.join(PANEL, "app.js"),
+                        "text/javascript; charset=utf-8", "public, max-age=60")
         elif path == "/style.css":
-            self._file(os.path.join(PANEL, "style.css"), "text/css; charset=utf-8")
+            _serve_file(self, os.path.join(PANEL, "style.css"),
+                        "text/css; charset=utf-8", "public, max-age=60")
+        elif path == "/favicon.svg":
+            _serve_file(self, os.path.join(PANEL, "favicon.svg"),
+                        "image/svg+xml", "public, max-age=86400")
         elif path == "/host.html":
             self._file(os.path.join(PANEL, "host.html"), "text/html; charset=utf-8")
         elif path == "/sse/events":
@@ -500,6 +595,31 @@ def verify(pw):
     return auth.verify_password(pw, stored) if stored else False
 
 
+def _dashboard(con):
+    """Un solo payload para el panel (menos round-trips)."""
+    hosts = db.hosts_with_threat(con, CFG, None)
+    aps = db.all_aps(con)
+    dups = _twin_ssids(aps)
+    for a in aps:
+        sc = score_ap(a, twin=(a.get("ssid") in dups), cfg=CFG)
+        a["risk"] = sc["score"]
+        a["tier"] = sc["tier"]
+        a["twin"] = bool(a.get("ssid") in dups)
+    st = db.stats(con)
+    crit = sum(1 for h in hosts if h.get("tier") == "crit")
+    warn = sum(1 for h in hosts if h.get("tier") == "warn")
+    return {
+        "stats": {**st, "crit_hosts": crit, "warn_hosts": warn},
+        "hosts": hosts,
+        "aps": aps,
+        "networks": db.networks(con),
+        "stations": db.stations_recent(con, 8),
+        "whitelist": db.whitelist(con),
+        "events": db.events_since(con, 0, 80),
+        "health": _health(),
+    }
+
+
 def _twin_ssids(aps):
     """SSIDs que aparecen con varias BSSIDs (posible evil-twin)."""
     seen, dups = set(), set()
@@ -537,8 +657,10 @@ def _trigger_scan():
 
 
 def run():
+    os.makedirs(os.path.dirname(PIDFILE), exist_ok=True)
     with open(PIDFILE, "w") as f:
         f.write(str(os.getpid()))
+    threading.Thread(target=_sse_pump, name="sse-pump", daemon=True).start()
     srv = ThreadingHTTPServer((BIND, PORT), Handler)
     print(f"[server] pid {os.getpid()} → http://{BIND}:{PORT}  (auth={Handler.auth_on})")
     try:
