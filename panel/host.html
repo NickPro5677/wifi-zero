@@ -3,17 +3,24 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0a0c10">
 <title>wifi-zero · host</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<header>
-  <h1>WIFI-ZERO</h1>
-  <span class="sub"><a href="/">← consola</a></span>
+<header class="topbar" style="margin:0;padding:16px 22px">
+  <div class="brand">
+    <span class="pulse-dot" aria-hidden="true"></span>
+    <h1>WIFI-ZERO</h1>
+  </div>
+  <span class="sub" style="margin:0"><a href="/">← consola</a></span>
   <span class="spacer"></span>
 </header>
-<main>
+<main style="padding-top:8px">
   <div id="hostCard"></div>
   <h2>Gráfico de uptime</h2>
   <img id="upt" alt="uptime" style="width:100%;max-width:760px">

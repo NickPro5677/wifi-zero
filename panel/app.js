@@ -60,7 +60,7 @@ function fmtWhen(ts) {
   return new Date(n).toLocaleString();
 }
 function scoreColor(tier) {
-  return tier === "crit" ? "#ff5d73" : tier === "warn" ? "#f0c14b" : "#4ad39a";
+  return tier === "crit" ? "#f07178" : tier === "warn" ? "#e6b84d" : "#3ecf9a";
 }
 function scoreCell(tier, score) {
   const c = scoreColor(tier);
