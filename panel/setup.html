@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#07090f">
+<title>wifi-zero · configuración inicial</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="login-body">
+  <div class="login-bg" aria-hidden="true"></div>
+  <form class="login-card glass" id="form" autocomplete="on" aria-labelledby="setupTitle">
+    <div class="brand">
+      <span class="pulse-dot" aria-hidden="true"></span>
+      <h1 id="setupTitle">WIFI-ZERO</h1>
+    </div>
+    <p class="sub">Primera configuración · sin terminal</p>
+    <label for="user">Usuario
+      <input id="user" name="username" autocomplete="username" value="admin" required>
+    </label>
+    <label for="pass">Contraseña (mín. 6)
+      <input id="pass" name="password" type="password" autocomplete="new-password" required minlength="6">
+    </label>
+    <label for="pass2">Repetir contraseña
+      <input id="pass2" name="password2" type="password" autocomplete="new-password" required minlength="6">
+    </label>
+    <fieldset class="setup-bind">
+      <legend>Acceso al panel</legend>
+      <label class="tog"><input type="radio" name="bind" value="127.0.0.1" checked> Solo este dispositivo (127.0.0.1)</label>
+      <label class="tog"><input type="radio" name="bind" value="0.0.0.0"> Toda la LAN (0.0.0.0)</label>
+    </fieldset>
+    <label class="tog"><input type="checkbox" id="startMon" checked> Arrancar monitor al terminar</label>
+    <button class="btn primary" type="submit" id="go">Crear y entrar</button>
+    <p class="err" id="err" role="alert" aria-live="assertive"></p>
+  </form>
+<script>
+(async () => {
+  try {
+    const r = await fetch("/api/setup/status");
+    const d = await r.json();
+    if (!d.setup_needed) location.href = "/login";
+  } catch (e) {}
+})();
+const err = document.getElementById("err");
+document.getElementById("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const go = document.getElementById("go");
+  const pw = document.getElementById("pass").value;
+  if (pw !== document.getElementById("pass2").value) {
+    err.textContent = "las contraseñas no coinciden";
+    return;
+  }
+  go.disabled = true;
+  const bind = (document.querySelector('input[name="bind"]:checked') || {}).value || "127.0.0.1";
+  try {
+    const r = await fetch("/api/setup", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        user: document.getElementById("user").value,
+        password: pw,
+        bind,
+        start_monitor: document.getElementById("startMon").checked,
+      }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || "fallo");
+    localStorage.setItem("wz_token", d.token);
+    location.href = "/";
+  } catch (ex) {
+    err.textContent = ex.message || "no se pudo completar el setup";
+    go.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

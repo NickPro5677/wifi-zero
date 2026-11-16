@@ -1,0 +1,19 @@
+{
+  "name": "wifi-zero",
+  "short_name": "wifi-zero",
+  "description": "Vigilancia de tu red local — panel de control",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#07090f",
+  "theme_color": "#07090f",
+  "lang": "es",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

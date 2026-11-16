@@ -35,3 +35,9 @@ confiables no generan `new_host` crítico; los no confiables lo generan como `cr
 El cooldown evita spam: para la misma entidad y regla, depende de `COOLDOWNS`
 en `core/rules.py`. Se puede tunear sin tocar código editando el diccionario
 (al recargar el módulo).
+
+## Silenciar reglas (v4)
+
+Desde el panel (Ajustes) o `POST /api/rules/mute` con
+`{ "rule": "new_host", "minutes": 60 }` (`minutes: -1` = hasta quitar;
+`clear: true` para reactivar). Se guarda en `config.json` → `muted_rules`.

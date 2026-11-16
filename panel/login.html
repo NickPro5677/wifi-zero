@@ -3,28 +3,38 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#07090f">
 <title>wifi-zero · acceso</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="manifest" href="/manifest.webmanifest">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body class="login-body">
-  <div class="login-bg"></div>
-  <form class="login-card glass" id="form" autocomplete="on">
+  <div class="login-bg" aria-hidden="true"></div>
+  <form class="login-card glass" id="form" autocomplete="on" aria-labelledby="loginTitle">
     <div class="brand">
-      <span class="pulse-dot"></span>
-      <h1>WIFI-ZERO</h1>
+      <span class="pulse-dot" aria-hidden="true"></span>
+      <h1 id="loginTitle">WIFI-ZERO</h1>
     </div>
-    <p class="sub">Consola de vigilancia de tu red · Termux</p>
-    <label>Usuario
+    <p class="sub">Consola de vigilancia de tu red</p>
+    <label for="user">Usuario
       <input id="user" name="username" autocomplete="username" placeholder="admin" value="admin">
     </label>
-    <label>Contraseña
+    <label for="pass">Contraseña
       <input id="pass" name="password" type="password" autocomplete="current-password" placeholder="••••••••">
     </label>
     <button class="btn primary" type="submit" id="go">Entrar</button>
-    <p class="err" id="err" role="alert"></p>
+    <p class="err" id="err" role="alert" aria-live="assertive"></p>
   </form>
 <script>
+(async () => {
+  try {
+    const r = await fetch("/api/setup/status");
+    const d = await r.json();
+    if (d.setup_needed) location.href = "/setup";
+  } catch (e) {}
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+})();
 const err = document.getElementById("err");
 document.getElementById("form").addEventListener("submit", async (e) => {
   e.preventDefault();

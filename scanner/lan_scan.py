@@ -106,7 +106,11 @@ def build_hosts(cidr="192.168.1.0/24"):
 
 # ------------------------------------------------------------ kernel neigh
 def read_neighbors(iface=None):
-    """Parse `ip neigh show`; ground truth without root."""
+    """Parse `ip neigh show`; ground truth without root.
+
+    Devuelve dict ip -> {mac, macs:set, state}. `macs` acumula todas las
+    lladdr vistas para esa IP (conflicto ARP si len>1).
+    """
     cmd = ["neigh", "show"] + (["dev", iface] if iface else [])
     out = _ip(cmd)
     alive = {}
@@ -115,10 +119,21 @@ def read_neighbors(iface=None):
         if not m:
             continue
         ip, mac = m.groups()
+        mac = mac.lower()
         state = 0
         if "FAILED" not in line and "INCOMPLETE" not in line:
             state = 1
-        alive[ip] = {"mac": mac.lower(), "state": state}
+        if ip not in alive:
+            alive[ip] = {"mac": mac, "macs": {mac}, "state": state}
+        else:
+            alive[ip]["macs"].add(mac)
+            # preferir entrada REACHABLE/estado bueno
+            if state and not alive[ip]["state"]:
+                alive[ip]["mac"] = mac
+                alive[ip]["state"] = state
+            elif state and mac != alive[ip]["mac"]:
+                # conflicto: mantener mac primaria, set completo en macs
+                alive[ip]["state"] = 1
     return alive
 
 
@@ -305,16 +320,20 @@ def scan_once(ifname="wlan0", cfg=None, deep=False):
     db.log_run(con, "lan", host_count=len(live))
     print(f"[lan] done: {len(live)} alive hosts")
 
-    # conflictos de IP: varias MAC para la misma IP en este snapshot
+    # conflictos de IP: varias MAC para la misma IP en el snapshot de neigh
     conflicts = {}
     for ip, n in neigh.items():
-        if n.get("mac") and n["state"]:
-            conflicts.setdefault(ip, set()).add(n["mac"])
-    conflicts = {ip: sorted(v) for ip, v in conflicts.items() if len(v) > 1}
+        mac_set = set(n.get("macs") or [])
+        if n.get("mac"):
+            mac_set.add(n["mac"])
+        if len(mac_set) > 1:
+            conflicts[ip] = sorted(mac_set)
     return {"live": {ip: macs.get(ip) for ip in live},
             "gateway": get_gateway(ifname),
             "base": base,
-            "conflicts": conflicts}
+            "conflicts": conflicts,
+            "neigh": {ip: {"mac": n.get("mac"), "macs": sorted(n.get("macs") or []),
+                           "state": n.get("state")} for ip, n in neigh.items()}}
 
 
 if __name__ == "__main__":

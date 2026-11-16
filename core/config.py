@@ -2,12 +2,13 @@
 """Configuración de wifi-zero.
 
 Carga config.json (si existe) y lo fusiona sobre los defaults. Proporciona
-acceso tipado y una función `validar` que detecta errores de configuración
-antes de arrancar el monitor/panel.
+acceso tipado, persistencia, vista pública (secretos redactados) y detección
+de first-run (setup_needed).
 """
 import json
 import os
 import logging
+import copy
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
@@ -38,9 +39,15 @@ DEFAULTS = {
             "weak_svc": 10, "danger_port": 15,
         },
     },
+    # rule_name -> unix ts until which the rule is muted (0 = forever until cleared)
+    "muted_rules": {},
 }
 
 VALID_LEVELS = {"info", "warn", "crit"}
+_SECRET_PATHS = (
+    ("panel", "password"),
+    ("pushes", "telegram_token"),
+)
 
 
 def _deep_merge(base, over):
@@ -126,6 +133,79 @@ class Config:
                 issues.append("pushes.enabled=true sin ntfy_url ni telegram completo")
         return issues
 
+    def public_dict(self):
+        """Copia segura para la API: secretos redactados."""
+        data = copy.deepcopy(self.data)
+        pw = (data.get("panel") or {}).get("password") or ""
+        if "panel" in data:
+            data["panel"]["password"] = ""
+            data["panel"]["password_set"] = bool(pw)
+        tok = (data.get("pushes") or {}).get("telegram_token") or ""
+        if "pushes" in data:
+            data["pushes"]["telegram_token"] = ("***" if tok else "")
+            data["pushes"]["telegram_token_set"] = bool(tok)
+        return data
 
-def load():
-    return Config()
+    def save(self, path=None):
+        path = path or self.path
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        # merge onto disk so we don't wipe unknown keys carelessly — write self.data
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(self.data, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        os.replace(tmp, path)
+        return path
+
+    def set_password_hash(self, hashed: str):
+        self.data.setdefault("panel", {})["password"] = hashed
+
+    def merge_patch(self, patch: dict):
+        """Aplica un patch parcial. No pisa password/token si vienen vacíos/redactados."""
+        patch = copy.deepcopy(patch or {})
+        panel = patch.get("panel") or {}
+        if "password" in panel and not panel.get("password"):
+            panel.pop("password", None)
+        if "password_set" in panel:
+            panel.pop("password_set", None)
+        pushes = patch.get("pushes") or {}
+        if pushes.get("telegram_token") in ("", "***"):
+            pushes.pop("telegram_token", None)
+        if "telegram_token_set" in pushes:
+            pushes.pop("telegram_token_set", None)
+        if panel:
+            patch["panel"] = panel
+        if pushes:
+            patch["pushes"] = pushes
+        self.data = _deep_merge(self.data, patch)
+
+
+def setup_needed(cfg=None):
+    """True si aún no hay contraseña (first-run wizard)."""
+    cfg = cfg or load()
+    if not cfg.panel.get("auth", True):
+        return False
+    return not bool(cfg.panel.get("password") or "")
+
+
+def load(path=CONFIG_PATH):
+    return Config(path=path)
+
+
+def save_password(plain: str, path=CONFIG_PATH, user=None):
+    """Hash + escribe panel.password (y opcionalmente user)."""
+    import auth
+    cfg = load(path)
+    if not os.path.exists(path):
+        # seed from example or defaults
+        example = os.path.join(BASE_DIR, "config.example.json")
+        if os.path.exists(example):
+            with open(example, "r", encoding="utf-8") as f:
+                cfg = Config(data=json.load(f), path=path)
+        else:
+            cfg = Config(data={}, path=path)
+    cfg.set_password_hash(auth.hash_password(plain))
+    if user:
+        cfg.data.setdefault("panel", {})["user"] = user
+    cfg.save(path)
+    return cfg

@@ -1,30 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Panel web de wifi-zero (F4): stdlib http, login (scrypt), SSE, gráficos.
+"""Panel web de wifi-zero (v4): stdlib http, login, SSE, PWA, plano de control.
 
-Endpoints REST:
-  GET  /login?to=...          -> página de login (si auth habilitada)
-  POST /api/login             -> {user, pass} -> token de sesión
-  GET  /api/stats             -> KPI
-  GET  /api/hosts             -> hosts + ports + threat score
-  GET  /api/hosts/<ip>        -> detalle de host (historia, puertos, eventos, riesgo)
-  GET  /api/hosts/<ip>/risk   -> serie histórica de riesgo
-  GET  /api/aps               -> APs (+ riesgo por AP, twin)
-  GET  /api/aps/signals       -> muestras RSSI por AP
-  GET  /api/networks          -> redes memorizadas
-  GET  /api/events?since=N    -> feed de eventos
-  GET  /api/topology          -> interfaces
-  GET  /api/whitelist         -> whitelist
-  POST /api/whitelist         -> añade entrada
-  DELETE /api/whitelist?mac=  -> elimina entrada
-  POST /api/scan              -> scan manual
-  GET  /export/hosts.csv      -> export (CSV escapado)
-  GET  /sse/events            -> flujo SSE de eventos (after every 3s)
-  GET  /chart/signals.svg     -> gráfico SVG de señales
-  GET  /chart/uptime.svg      -> gráfico SVG de uptime
-  GET  /chart/risk.svg        -> gráfico SVG de riesgo histórico
-Todo lo que no sea GET /login o /api/login requiere cabecera Authorization
-si `panel.auth=true` (config). Los POST llevan protección CSRF (Origin) y el
-login tiene throttling por IP (5 fallos / 10 min).
+Endpoints REST (además de inventario v3):
+  GET/PUT /api/config
+  POST    /api/password · /api/setup
+  GET     /api/control/status
+  POST    /api/control/{start,stop,restart,pause,resume,scan}
+  POST    /api/checks · /api/backup
+  GET     /api/logs?tail=N
+  GET     /api/setup/status  (público si hace falta first-run)
+Auth Bearer + CSRF en mutaciones. Throttling de login 5/10min.
 """
 import os
 import sys
@@ -44,6 +29,7 @@ import db  # noqa: E402
 import config  # noqa: E402
 import auth  # noqa: E402
 import log  # noqa: E402
+import checks as wz_checks  # noqa: E402
 from threat import score_ap  # noqa: E402
 
 log.setup("web", level=20)
@@ -55,17 +41,43 @@ BIND = CFG.panel.get("bind", "0.0.0.0")
 PANEL = os.path.join(BASE_DIR, "panel")
 PIDFILE = os.path.join(BASE_DIR, "logs", "server.pid")
 
-# SSE broadcast (el monitor es otro proceso: se reinyecta desde SQLite)
+# Supervisor inyectado por core.supervisor (None si se lanza solo server.py)
+_SUPERVISOR = None
+
+# SSE broadcast (el monitor puede ser otro hilo/proceso: se reinyecta desde SQLite)
 _SUBSCRIBERS = set()
 _SUB_LOCK = threading.Lock()
 _SSE_LAST_ID = 0
 
 STATIC_PUBLIC = {
-    "/", "", "/login", "/login.html", "/host.html",
+    "/", "", "/login", "/login.html", "/host.html", "/setup", "/setup.html",
     "/app.js", "/style.css", "/favicon.svg", "/api/login",
+    "/api/setup/status", "/manifest.webmanifest", "/sw.js",
+    "/icon-192.png", "/icon-512.png",
 }
 
 MONITOR_PID = os.path.join(BASE_DIR, "logs", "monitor.pid")
+
+
+def attach_supervisor(sup):
+    global _SUPERVISOR, CFG, PORT, BIND
+    _SUPERVISOR = sup
+    CFG = sup.cfg
+    PORT = int(os.environ.get("WZ_PORT", CFG.panel.get("port", 8788)))
+    BIND = CFG.panel.get("bind", "0.0.0.0")
+    Handler.auth_on = CFG.panel.get("auth", True)
+    Handler.user = CFG.panel.get("user", "admin")
+
+
+def _refresh_cfg():
+    global CFG
+    if _SUPERVISOR is not None:
+        CFG = _SUPERVISOR.reload_config()
+    else:
+        CFG = config.load()
+    Handler.auth_on = CFG.panel.get("auth", True)
+    Handler.user = CFG.panel.get("user", "admin")
+    return CFG
 
 
 def _broadcast(event, data):
@@ -137,7 +149,7 @@ def _health():
     except Exception:
         last_st = None
     con.close()
-    return {
+    out = {
         "ok": True,
         "monitor_pid": _pid_alive(MONITOR_PID),
         "server_pid": os.getpid(),
@@ -146,7 +158,13 @@ def _health():
         "charging": charging,
         "station": last_st,
         "version": st.get("version"),
+        "app_version": "4.0.0",
+        "setup_needed": config.setup_needed(CFG),
     }
+    if _SUPERVISOR is not None:
+        out.update(_SUPERVISOR.status())
+        out["monitor_pid"] = out.get("monitor_pid") or (_pid_alive(MONITOR_PID) if out.get("monitor_running") else None)
+    return out
 
 
 # tecla de sesión compartida (mismo proceso)
@@ -337,7 +355,7 @@ def _csrf_ok(handler):
 
 # ------------------------------------------------------------------ handler
 class Handler(BaseHTTPRequestHandler):
-    server_version = "wifi-zero/3.1"
+    server_version = "wifi-zero/4.0"
     auth_on = CFG.panel.get("auth", True)
     user = CFG.panel.get("user", "admin")
 
@@ -349,8 +367,11 @@ class Handler(BaseHTTPRequestHandler):
         p = urlparse(self.path).path
         if p in STATIC_PUBLIC:
             return True
+        # first-run: permitir setup sin token
+        if p in ("/api/setup",) and self.command == "POST" and config.setup_needed(CFG):
+            return True
         # escaneo local (start_all.sh) sin token
-        if p == "/api/scan" and self.command == "POST":
+        if p in ("/api/scan", "/api/control/scan") and self.command == "POST":
             ip = (self.client_address or [""])[0]
             if ip in ("127.0.0.1", "::1"):
                 return True
@@ -374,6 +395,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(_health())
             elif path == "/api/dashboard":
                 self._json(_dashboard(con))
+            elif path == "/api/config":
+                self._json({"config": CFG.public_dict()})
+            elif path == "/api/control/status":
+                self._json(_health())
+            elif path == "/api/setup/status":
+                self._json({
+                    "setup_needed": config.setup_needed(CFG),
+                    "user": CFG.panel.get("user", "admin"),
+                    "bind": CFG.panel.get("bind", "0.0.0.0"),
+                    "port": CFG.panel.get("port", 8788),
+                })
+            elif path == "/api/logs":
+                try:
+                    tail = int(qs.get("tail", ["80"])[0])
+                except ValueError:
+                    tail = 80
+                self._json({"lines": _tail_logs(tail)})
             elif path == "/api/hosts":
                 self._json(db.hosts_with_threat(con, CFG, None))
             elif path.startswith("/api/hosts/"):
@@ -419,13 +457,26 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path
+        # redirigir a setup si aún no hay password
+        if path in ("/", "") and config.setup_needed(CFG):
+            self.send_response(302)
+            self.send_header("Location", "/setup")
+            self.end_headers()
+            return
         if not self._require():
             self._send401()
             return
         if path in ("/", ""):
             self._file(os.path.join(PANEL, "index.html"), "text/html; charset=utf-8")
         elif path in ("/login", "/login.html"):
+            if config.setup_needed(CFG):
+                self.send_response(302)
+                self.send_header("Location", "/setup")
+                self.end_headers()
+                return
             self._file(os.path.join(PANEL, "login.html"), "text/html; charset=utf-8")
+        elif path in ("/setup", "/setup.html"):
+            self._file(os.path.join(PANEL, "setup.html"), "text/html; charset=utf-8")
         elif path == "/app.js":
             _serve_file(self, os.path.join(PANEL, "app.js"),
                         "text/javascript; charset=utf-8", "public, max-age=60")
@@ -435,6 +486,20 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/favicon.svg":
             _serve_file(self, os.path.join(PANEL, "favicon.svg"),
                         "image/svg+xml", "public, max-age=86400")
+        elif path == "/manifest.webmanifest":
+            _serve_file(self, os.path.join(PANEL, "manifest.webmanifest"),
+                        "application/manifest+json", "public, max-age=3600")
+        elif path == "/sw.js":
+            _serve_file(self, os.path.join(PANEL, "sw.js"),
+                        "text/javascript; charset=utf-8", "no-cache")
+        elif path in ("/icon-192.png", "/icon-512.png"):
+            name = path.lstrip("/")
+            p = os.path.join(PANEL, name)
+            if os.path.isfile(p):
+                _serve_file(self, p, "image/png", "public, max-age=86400")
+            else:
+                # fallback SVG as icon
+                self._file(os.path.join(PANEL, "favicon.svg"), "image/svg+xml")
         elif path == "/host.html":
             self._file(os.path.join(PANEL, "host.html"), "text/html; charset=utf-8")
         elif path == "/sse/events":
@@ -446,6 +511,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_route()
         elif path == "/export/hosts.csv":
             self._export_csv()
+        elif path == "/export/events.csv":
+            self._export_events_csv()
         elif path.startswith("/chart/signals.svg"):
             self._chart_signal()
         elif path.startswith("/chart/uptime.svg"):
@@ -473,6 +540,24 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/csv; charset=utf-8")
         self.send_header("Content-Disposition", 'attachment; filename="hosts.csv"')
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        con.close()
+
+    def _export_events_csv(self):
+        con = db.connect()
+        evs = db.events_since(con, 0, 2000)
+        q = lambda v: '"' + str(v or "").replace('"', '""') + '"'
+        lines = ["id;ts;kind;level;ip;mac;message"]
+        for e in evs:
+            lines.append(";".join(map(q, [
+                e.get("id"), _fmt(e.get("ts")), e.get("kind"), e.get("level"),
+                e.get("ip"), e.get("mac"), e.get("message")])))
+        body = ("\n".join(lines)).encode("utf-8-sig")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", 'attachment; filename="events.csv"')
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -514,6 +599,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _read_json(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length <= 0:
+                return {}
+            return json.loads(self.rfile.read(length))
+        except Exception as e:
+            raise ValueError(str(e))
+
     def do_POST(self):
         path = urlparse(self.path).path
         if not self._require():
@@ -524,9 +618,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/login":
             try:
-                length = int(self.headers.get("Content-Length", 0))
-                data = json.loads(self.rfile.read(length))
-            except Exception as e:
+                data = self._read_json()
+            except ValueError as e:
                 self._json({"error": str(e)}, 400)
                 return
             client = (self.client_address[0] if self.client_address else "?")
@@ -539,13 +632,174 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 _login_fail(client)
                 self._json({"error": "credenciales inválidas"}, 401)
-        elif path == "/api/scan":
-            _trigger_scan()
-            self._json({"ok": True, "msg": "escaneo lanzado"})
+        elif path == "/api/setup":
+            self._api_setup()
+        elif path == "/api/password":
+            self._api_password()
+        elif path == "/api/config":
+            self._api_config_put()
+        elif path in ("/api/scan", "/api/control/scan"):
+            msg = _trigger_scan()
+            self._json({"ok": True, "msg": msg})
+        elif path == "/api/control/start":
+            self._control("start")
+        elif path == "/api/control/stop":
+            self._control("stop")
+        elif path == "/api/control/restart":
+            self._control("restart")
+        elif path == "/api/control/pause":
+            self._control("pause")
+        elif path == "/api/control/resume":
+            self._control("resume")
+        elif path == "/api/checks":
+            self._json(wz_checks.run_checks(port=PORT, supervisor=_SUPERVISOR))
+        elif path == "/api/backup":
+            self._json(wz_checks.make_backup())
+        elif path == "/api/rules/mute":
+            self._api_mute_rule()
         elif path == "/api/whitelist":
             self._whitelist_post()
         else:
             self._json({"error": "not found"}, 404)
+
+    def do_PUT(self):
+        path = urlparse(self.path).path
+        if not self._require():
+            self._send401()
+            return
+        if not _csrf_ok(self):
+            self._json({"error": "origen no permitido (CSRF)"}, 403)
+            return
+        if path == "/api/config":
+            self._api_config_put()
+        else:
+            self._json({"error": "not found"}, 404)
+
+    def _control(self, action):
+        if _SUPERVISOR is None:
+            self._json({"error": "supervisor no activo; usa python3 -m core"}, 503)
+            return
+        fn = {
+            "start": _SUPERVISOR.start_monitor,
+            "stop": _SUPERVISOR.stop_monitor,
+            "restart": _SUPERVISOR.restart_monitor,
+            "pause": _SUPERVISOR.pause_monitor,
+            "resume": _SUPERVISOR.resume_monitor,
+        }.get(action)
+        ok, msg = fn()
+        self._json({"ok": ok, "msg": msg, "status": _SUPERVISOR.status()}, 200 if ok else 400)
+
+    def _api_setup(self):
+        if not config.setup_needed(CFG):
+            self._json({"error": "ya configurado"}, 400)
+            return
+        try:
+            data = self._read_json()
+        except ValueError as e:
+            self._json({"error": str(e)}, 400)
+            return
+        pw = data.get("password") or ""
+        if len(pw) < 6:
+            self._json({"error": "contraseña demasiado corta (mín. 6)"}, 400)
+            return
+        user = (data.get("user") or "admin").strip() or "admin"
+        bind = data.get("bind") or CFG.panel.get("bind", "0.0.0.0")
+        cfg = config.load()
+        cfg.data.setdefault("panel", {})
+        cfg.data["panel"]["user"] = user
+        cfg.data["panel"]["bind"] = bind
+        cfg.data["panel"]["auth"] = True
+        cfg.set_password_hash(auth.hash_password(pw))
+        issues = cfg.validar()
+        if issues:
+            self._json({"error": "config inválida", "issues": issues}, 400)
+            return
+        cfg.save()
+        _refresh_cfg()
+        Handler.user = user
+        if _SUPERVISOR is not None:
+            _SUPERVISOR.reload_config()
+            if data.get("start_monitor", True):
+                _SUPERVISOR.start_monitor()
+        tok = auth.create_token(user)
+        self._json({"ok": True, "token": tok, "user": user})
+
+    def _api_password(self):
+        try:
+            data = self._read_json()
+        except ValueError as e:
+            self._json({"error": str(e)}, 400)
+            return
+        old = data.get("old_password") or data.get("current") or ""
+        new = data.get("password") or data.get("new_password") or ""
+        if len(new) < 6:
+            self._json({"error": "contraseña demasiado corta (mín. 6)"}, 400)
+            return
+        if CFG.panel.get("password") and not verify(old):
+            self._json({"error": "contraseña actual incorrecta"}, 401)
+            return
+        cfg = config.load()
+        cfg.set_password_hash(auth.hash_password(new))
+        if data.get("user"):
+            cfg.data.setdefault("panel", {})["user"] = data["user"]
+        cfg.save()
+        _refresh_cfg()
+        self._json({"ok": True})
+
+    def _api_config_put(self):
+        try:
+            data = self._read_json()
+        except ValueError as e:
+            self._json({"error": str(e)}, 400)
+            return
+        patch = data.get("config") if isinstance(data.get("config"), dict) else data
+        cfg = config.load()
+        old_bind = cfg.panel.get("bind")
+        old_port = cfg.panel.get("port")
+        cfg.merge_patch(patch)
+        issues = cfg.validar()
+        if issues:
+            self._json({"error": "config inválida", "issues": issues}, 400)
+            return
+        cfg.save()
+        _refresh_cfg()
+        if _SUPERVISOR is not None:
+            _SUPERVISOR.reload_config()
+        need_restart = (cfg.panel.get("bind") != old_bind or cfg.panel.get("port") != old_port)
+        self._json({
+            "ok": True,
+            "config": CFG.public_dict(),
+            "restart_required": need_restart,
+            "msg": "reinicia el supervisor para aplicar bind/port" if need_restart else "aplicado",
+        })
+
+    def _api_mute_rule(self):
+        try:
+            data = self._read_json()
+        except ValueError as e:
+            self._json({"error": str(e)}, 400)
+            return
+        rule = (data.get("rule") or "").strip()
+        if not rule:
+            self._json({"error": "rule requerido"}, 400)
+            return
+        minutes = data.get("minutes")
+        clear = bool(data.get("clear"))
+        cfg = config.load()
+        muted = dict(cfg.get("muted_rules", default={}) or {})
+        if clear:
+            muted.pop(rule, None)
+        else:
+            if minutes is None or int(minutes) < 0:
+                muted[rule] = -1  # forever until cleared
+            else:
+                muted[rule] = int(time.time()) + int(minutes) * 60
+        cfg.data["muted_rules"] = muted
+        cfg.save()
+        _refresh_cfg()
+        if _SUPERVISOR is not None:
+            _SUPERVISOR.reload_config()
+        self._json({"ok": True, "muted_rules": muted})
 
     def do_DELETE(self):
         path = urlparse(self.path).path
@@ -646,17 +900,44 @@ def sv_hosts_detail(con, ip):
 
 
 def _trigger_scan():
+    if _SUPERVISOR is not None:
+        _SUPERVISOR.trigger_scan()
+        return "escaneo lanzado"
     def work():
         try:
             sys.path.insert(0, os.path.join(BASE_DIR, "core"))
             from monitor import Monitor
-            Monitor(CFG).run()
+            Monitor(CFG).run(deep_sv=True)
         except Exception as e:
             db.add_event(db.connect(), "error", "warn", f"escaneo manual: {e}")
     threading.Thread(target=work, daemon=True).start()
+    return "escaneo lanzado"
+
+
+def _tail_logs(n=80):
+    """Últimas líneas de logs/monitor.log y logs/wifi-zero.log."""
+    out = []
+    for name in ("monitor.log", "server.log", "wifi-zero.log"):
+        path = os.path.join(BASE_DIR, "logs", name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()[-max(1, n):]
+            for ln in lines:
+                out.append({"file": name, "line": ln.rstrip("\n")})
+        except Exception:
+            pass
+    return out[-n:]
 
 
 def run():
+    global CFG, PORT, BIND
+    CFG = config.load() if _SUPERVISOR is None else _SUPERVISOR.cfg
+    PORT = int(os.environ.get("WZ_PORT", CFG.panel.get("port", 8788)))
+    BIND = CFG.panel.get("bind", "0.0.0.0")
+    Handler.auth_on = CFG.panel.get("auth", True)
+    Handler.user = CFG.panel.get("user", "admin")
     os.makedirs(os.path.dirname(PIDFILE), exist_ok=True)
     with open(PIDFILE, "w") as f:
         f.write(str(os.getpid()))
