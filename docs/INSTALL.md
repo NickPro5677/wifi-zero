@@ -17,7 +17,7 @@ pkg install termux-widget   # atajos en la pantalla de inicio
 ```
 
 Instala también la app **Termux:API** (F-Droid/Play) — sin ella no hay
-`termux-wifi-scaninfo` / batería.
+`termux-wifi-scaninfo` / `termux-wifi-connectioninfo` / batería.
 
 ## 2. Permisos Android
 
@@ -26,6 +26,10 @@ En Ajustes del sistema → Apps → Termux / Termux:API:
 - Ubicación (necesaria para escaneo Wi‑Fi en Android 6+)
 - Red / Wi‑Fi cercanas (Android 13+)
 - Notificaciones (si usas `termux-notification` / pushes)
+
+El escaneo de redes cercanas es **pasivo**: solo lee lo que el SO reporta
+(SSID, BSSID, canal, RSSI, cifrado). Sin estos permisos, `/api/wifi/scan`
+devolverá error o lista vacía. Ver `docs/ETHICS.md`.
 
 ## 3. Clonar y arrancar
 

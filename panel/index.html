@@ -21,7 +21,7 @@
       <span class="pulse-dot" id="liveDot" aria-hidden="true"></span>
       <div>
         <h1>WIFI-ZERO</h1>
-        <small id="ver">v4.0</small>
+        <small id="ver">v4.1</small>
       </div>
     </div>
     <nav id="nav" aria-label="Vistas">
@@ -103,11 +103,33 @@
 
     <section id="view-radio" class="view hidden" aria-label="Radio">
       <div class="panel">
+        <h2>Enlace Wi‑Fi</h2>
+        <div id="linkBox" class="ops-box">—</div>
+        <p class="hint" id="linkHint"></p>
+      </div>
+      <div class="panel">
+        <h2>Redes cercanas (escaneo pasivo)</h2>
+        <p class="sub">Solo información legal reportada por Android (SSID, BSSID, canal, RSSI, cifrado). Requiere Termux:API + permisos de ubicación / Wi‑Fi cercanas. Sin modo monitor ni ataques.</p>
+        <div class="filterbar">
+          <button class="btn primary" type="button" id="btnWifiScan">Escanear cercanas</button>
+          <span id="wifiScanMsg" class="hint" role="status"></span>
+        </div>
+        <div class="table-wrap">
+          <table id="tNearby">
+            <thead><tr>
+              <th scope="col">SSID</th><th scope="col">BSSID</th><th scope="col">CH</th><th scope="col">Banda</th>
+              <th scope="col">RSSI</th><th scope="col">Cifrado</th><th scope="col">Vendor</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel">
         <h2>Ocupación de canales</h2>
         <div id="heat" class="heat"></div>
       </div>
       <div class="panel">
-        <h2>APs visibles</h2>
+        <h2>APs en historial</h2>
         <div class="table-wrap">
           <table id="tAP">
             <thead><tr>

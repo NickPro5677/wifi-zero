@@ -10,11 +10,26 @@ ni sniffing de terceros, y el monitor te pide **ningún** privilegio.
 2. **No daña a nadie.** Los escaneos que hace son equivalentes a `ping` y
    `nmap -sV` sobre tu propia subred; no explota, no inyecta, no rompe.
 3. **Transparencia.** Los vecinos cuyas redes aparecen en la vista Wi-Fi solo
-   muestran información ya pública en el broadcast (SSID/BSID/canal/RSSI);
+   muestran información ya pública en el broadcast (SSID/BSSID/canal/RSSI);
    no se cruza con tráfico de esas redes.
 4. **No publicas.** No subas a Internet los datos de tu red (IPs, MACs,
    historial) salvo que sea para ti mismo. No actives `pushes` con credenciales
    al marcar alertas hacia servicios externos a menos que lo entiendas.
+
+## Escaneo Wi‑Fi cercano (pasivo / solo OS)
+
+`GET|POST /api/wifi/scan` y la vista **Radio → Escanear cercanas** usan
+únicamente `termux-wifi-scaninfo` (Termux:API): el mismo resultado que
+Android muestra al listar redes. Campos expuestos: SSID, BSSID,
+frecuencia/canal, RSSI, capabilities/cifrado reportado por el SO y
+timestamp si el sistema lo incluye.
+
+- **No** hay modo monitor, captura de handshakes, deauth, spoofing de MAC
+  ni ataques a contraseñas.
+- En Android 6+ hace falta **permiso de ubicación**; en Android 13+ también
+  **Wi‑Fi cercanas**, concedidos a Termux:API.
+- Instala `pkg install termux-api` y la app Termux:API. Sin eso el escaneo
+  falla con un error claro en el panel.
 
 ## Aviso legal
 En la mayoría de jurisdicciones auditar una red sin permiso es ilegal incluso

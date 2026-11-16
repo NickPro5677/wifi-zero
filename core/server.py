@@ -9,6 +9,9 @@ Endpoints REST (además de inventario v3):
   POST    /api/checks · /api/backup
   GET     /api/logs?tail=N
   GET     /api/setup/status  (público si hace falta first-run)
+  GET     /api/wifi/scan     → redes cercanas (campos legales, Termux:API)
+  POST    /api/wifi/scan     → mismo + persistir en DB (?persist=1 por defecto)
+  GET     /api/wifi/link     → estado de enlace actual (connectioninfo)
 Auth Bearer + CSRF en mutaciones. Throttling de login 5/10min.
 """
 import os
@@ -158,12 +161,20 @@ def _health():
         "charging": charging,
         "station": last_st,
         "version": st.get("version"),
-        "app_version": "4.0.0",
+        "app_version": "4.1.0",
         "setup_needed": config.setup_needed(CFG),
     }
     if _SUPERVISOR is not None:
         out.update(_SUPERVISOR.status())
         out["monitor_pid"] = out.get("monitor_pid") or (_pid_alive(MONITOR_PID) if out.get("monitor_running") else None)
+    # enlace en vivo si el supervisor no lo trae aún (solo dicts JSON-safe)
+    conn = out.get("connection")
+    if not isinstance(conn, dict):
+        try:
+            import wifi_track
+            out["connection"] = {"live": wifi_track.connection_status()}
+        except Exception:
+            out.pop("connection", None)
     return out
 
 
@@ -433,6 +444,10 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/aps/signals":
                 bssid = qs.get("bssid", [None])[0]
                 self._json({"signals": db.signal_trend(con, bssid)})
+            elif path == "/api/wifi/scan":
+                self._json(_wifi_scan(persist=False))
+            elif path == "/api/wifi/link":
+                self._json(_wifi_link())
             elif path == "/api/whitelist":
                 self._json({"whitelist": db.whitelist(con)})
             elif path == "/api/events":
@@ -641,6 +656,11 @@ class Handler(BaseHTTPRequestHandler):
         elif path in ("/api/scan", "/api/control/scan"):
             msg = _trigger_scan()
             self._json({"ok": True, "msg": msg})
+        elif path == "/api/wifi/scan":
+            # por defecto persiste; ?persist=0 solo lectura en vivo
+            qs = parse_qs(urlparse(self.path).query)
+            persist = (qs.get("persist", ["1"])[0] or "1") not in ("0", "false", "no")
+            self._json(_wifi_scan(persist=persist))
         elif path == "/api/control/start":
             self._control("start")
         elif path == "/api/control/stop":
@@ -847,6 +867,25 @@ class Handler(BaseHTTPRequestHandler):
 def verify(pw):
     stored = CFG.panel.get("password", "")
     return auth.verify_password(pw, stored) if stored else False
+
+
+def _wifi_scan(persist=False):
+    """Escaneo pasivo de redes cercanas (campos legales únicamente)."""
+    import wifi_track
+    return wifi_track.scan_nearby(persist=persist)
+
+
+def _wifi_link():
+    """Estado de enlace actual + snapshot del monitor si hay supervisor."""
+    import wifi_track
+    live = wifi_track.connection_status()
+    mon = None
+    if _SUPERVISOR is not None and getattr(_SUPERVISOR, "_monitor", None) is not None:
+        try:
+            mon = _SUPERVISOR._monitor.connection_snapshot()
+        except Exception:
+            mon = None
+    return {"ok": True, "live": live, "monitor": mon}
 
 
 def _dashboard(con):

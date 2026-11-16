@@ -83,6 +83,14 @@ class Supervisor:
                 charging, bat = battery_state()
             except Exception:
                 pass
+            conn = None
+            if self._monitor is not None:
+                try:
+                    snap = self._monitor.connection_snapshot()
+                    if isinstance(snap, dict):
+                        conn = snap
+                except Exception:
+                    conn = None
             return {
                 "ok": True,
                 "mode": mode,
@@ -95,7 +103,8 @@ class Supervisor:
                 "charging": charging,
                 "cfg_generation": self._cfg_generation,
                 "setup_needed": config.setup_needed(self.cfg),
-                "version": "4.0.0",
+                "version": "4.1.0",
+                "connection": conn,
             }
 
     def start_monitor(self, force=False):

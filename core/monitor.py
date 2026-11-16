@@ -58,8 +58,15 @@ def battery_flush():
 
 
 def wifi_gate():
+    """True si el teléfono está asociado (supplicant COMPLETED)."""
     st = wifi_track.get_link()
     return bool(st and st.get("connected"))
+
+
+def wifi_link_snapshot():
+    """(connected: bool, link: dict|None) — una sola lectura de connectioninfo."""
+    st = wifi_track.get_link()
+    return bool(st and st.get("connected")), st
 
 
 class Monitor:
@@ -76,6 +83,11 @@ class Monitor:
         self.supervisor = supervisor
         self.manual_pause = False
         self.mode = "running"
+        # conexión: backoff al perder Wi‑Fi + estado visible en /api/wifi/link
+        self._wifi_fail_streak = 0
+        self._wifi_backoff_s = 5
+        self._last_link = None
+        self._was_offline = False
 
     def request_stop(self):
         self._stop.set()
@@ -261,55 +273,92 @@ class Monitor:
                 self._set_mode("paused")
                 time.sleep(1)
                 continue
-            if not wifi_gate():
-                LOGGER.info("sin WiFi (supplicant inactive) — pausado")
+
+            connected, link = wifi_link_snapshot()
+            self._last_link = link
+
+            if not connected:
+                self._wifi_fail_streak += 1
+                self._wifi_backoff_s = wifi_track.offline_backoff_seconds(
+                    self._wifi_fail_streak
+                )
+                self._was_offline = True
+                state = (link or {}).get("state") if link else "inactive"
+                LOGGER.info(
+                    "sin WiFi (supplicant %s) — backoff %ss (fallo #%d)",
+                    state or "inactive", self._wifi_backoff_s, self._wifi_fail_streak,
+                )
                 self._set_mode("offline_wifi")
+                sleep_s = self._wifi_backoff_s
             else:
+                # reconexión: reset backoff y forzar ciclo inmediato
+                if self._was_offline:
+                    LOGGER.info("WiFi recuperado — escaneo inmediato")
+                    self._was_offline = False
+                    self._wifi_fail_streak = 0
+                    self._wifi_backoff_s = 5
+                    nxt["lan"] = 0.0
+                    nxt["wifi"] = 0.0
+                else:
+                    self._wifi_fail_streak = 0
+                    self._wifi_backoff_s = 5
+
                 pause, eco, _pct = self._power_profile()
                 if pause:
                     self._set_mode("paused")
-                    # sleep en trozos para respetar stop
-                    for _ in range(15):
-                        if self._stopped():
-                            break
-                        time.sleep(1)
-                    continue
-                self._set_mode("eco" if eco else "running")
-                lan_iv = self.cfg.lan_interval * (2 if eco else 1)
-                wifi_iv = self.cfg.wifi_interval * (2 if eco else 1)
-                sv_iv = self.cfg.sv_interval * (2 if eco else 1)
-                did = False
-                if t >= nxt.get("lan", 0):
-                    deep = (t >= self._next_sv)
-                    if deep:
-                        self._next_sv = t + sv_iv
-                    try:
-                        self.run(deep_sv=deep, do_lan=True, do_wifi=False)
-                    except Exception as e:
-                        LOGGER.error("lan cycle err %r", e)
-                    nxt["lan"] = t + lan_iv
-                    self._record_scores()
-                    did = True
-                if t >= nxt.get("wifi", 0):
-                    try:
-                        self.run(deep_sv=False, do_lan=False, do_wifi=True)
-                    except Exception as e:
-                        LOGGER.error("wifi cycle err %r", e)
-                    nxt["wifi"] = t + wifi_iv
-                    did = True
-                if did and t >= self._next_prune:
-                    try:
-                        removed = db.prune(self.con)
-                        LOGGER.info("prune: %s", removed)
-                    except Exception as e:
-                        LOGGER.error("prune err %r", e)
-                    self._next_prune = t + 86400
-            for _ in range(5):
+                    sleep_s = 15
+                else:
+                    self._set_mode("eco" if eco else "running")
+                    lan_iv = self.cfg.lan_interval * (2 if eco else 1)
+                    wifi_iv = self.cfg.wifi_interval * (2 if eco else 1)
+                    sv_iv = self.cfg.sv_interval * (2 if eco else 1)
+                    did = False
+                    if t >= nxt.get("lan", 0):
+                        deep = (t >= self._next_sv)
+                        if deep:
+                            self._next_sv = t + sv_iv
+                        try:
+                            self.run(deep_sv=deep, do_lan=True, do_wifi=False)
+                        except Exception as e:
+                            LOGGER.error("lan cycle err %r", e)
+                        nxt["lan"] = t + lan_iv
+                        self._record_scores()
+                        did = True
+                    if t >= nxt.get("wifi", 0):
+                        try:
+                            self.run(deep_sv=False, do_lan=False, do_wifi=True)
+                        except Exception as e:
+                            LOGGER.error("wifi cycle err %r", e)
+                        nxt["wifi"] = t + wifi_iv
+                        did = True
+                    if did and t >= self._next_prune:
+                        try:
+                            removed = db.prune(self.con)
+                            LOGGER.info("prune: %s", removed)
+                        except Exception as e:
+                            LOGGER.error("prune err %r", e)
+                        self._next_prune = t + 86400
+                    sleep_s = 5
+
+            for _ in range(max(1, int(sleep_s))):
                 if self._stopped():
                     break
                 time.sleep(1)
         LOGGER.info("monitor loop fin")
         self._set_mode("stopped")
+
+    def connection_snapshot(self):
+        """Estado de enlace + backoff para el panel (sin reconsultar Termux)."""
+        link = self._last_link
+        connected = bool(link and link.get("connected"))
+        return {
+            "connected": connected,
+            "link": link,
+            "mode": self.mode,
+            "wifi_fail_streak": self._wifi_fail_streak,
+            "wifi_backoff_s": self._wifi_backoff_s if self.mode == "offline_wifi" else 0,
+            "was_offline": self._was_offline,
+        }
 
 
 def stop():
