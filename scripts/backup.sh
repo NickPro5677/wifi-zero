@@ -1,4 +1,4 @@
-#!/data/data/com.termux/files/usr/bin/sh
+#!/usr/bin/env sh
 # wifi-zero backup WAL-safe → data/backups/wifi-<ts>.db (retiene 7 días).
 # Usa la API sqlite3 (core.checks.make_backup), no cp sobre WAL activo.
 # Legado CLI — preferible: panel → Sistema → Backup, o POST /api/backup

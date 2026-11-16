@@ -1,4 +1,4 @@
-#!/data/data/com.termux/files/usr/bin/sh
+#!/usr/bin/env sh
 # wifi-zero stopper (v4 supervisor)
 cd "$(dirname "$0")"
 for f in logs/supervisor.pid logs/monitor.pid logs/server.pid; do

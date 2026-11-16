@@ -1,5 +1,29 @@
 # Changelog
 
+## [4.2.0] - híbrido Pi/PC + PWA
+### Arquitectura
+- Runtime **primario**: Linux (Debian/Ubuntu/Raspberry Pi OS). El teléfono
+  es cliente PWA contra la IP LAN del Pi. Termux = opcional/legado.
+- `core/runtime.py`: detección Linux vs Termux, rutas portables (`ip`, nmap,
+  OUI, Termux:API).
+- Monitor en Linux **no** se bloquea por falta de `connectioninfo`; LAN/ARP
+  es el camino primario. Ciclo Wi‑Fi cercano se omite si no hay Termux:API.
+- Checks: `termux-wifi-scaninfo` marcado opcional en Linux (no tumba el resumen).
+
+### Operación
+- `deploy/wifi-zero.service` — unidad systemd de ejemplo.
+- Scripts con shebang portable (`#!/usr/bin/env sh`).
+- Docs: README / INSTALL / ARCHITECTURE / SECURITY / ETHICS reorientados;
+  checklist Pi + PWA; bind LAN + `WZ_SESSION_SECRET`.
+
+### UX
+- `/api/setup/status` expone `runtime`, `recommended_bind`, `hints`.
+- Wizard `/setup` recomienda `0.0.0.0` en host Linux; Radio aclara escaneo opcional.
+- Errores claros cuando faltan herramientas Termux en Linux (soft-fail).
+
+### Tests
+- `tests/test_runtime.py` para helpers de runtime / mensajes opcionales.
+
 ## [4.1.0] - escaneo cercanas + enlace
 ### Wi‑Fi (legal / pasivo)
 - `GET/POST /api/wifi/scan` — redes cercanas vía `termux-wifi-scaninfo`

@@ -9,9 +9,9 @@ Endpoints REST (además de inventario v3):
   POST    /api/checks · /api/backup
   GET     /api/logs?tail=N
   GET     /api/setup/status  (público si hace falta first-run)
-  GET     /api/wifi/scan     → redes cercanas (campos legales, Termux:API)
+  GET     /api/wifi/scan     → redes cercanas opcionales (Termux:API)
   POST    /api/wifi/scan     → mismo + persistir en DB (?persist=1 por defecto)
-  GET     /api/wifi/link     → estado de enlace actual (connectioninfo)
+  GET     /api/wifi/link     → enlace (connectioninfo) o LAN_HOST en Linux
 Auth Bearer + CSRF en mutaciones. Throttling de login 5/10min.
 """
 import os
@@ -411,11 +411,25 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/control/status":
                 self._json(_health())
             elif path == "/api/setup/status":
+                try:
+                    import runtime
+                    profile = runtime.host_profile()
+                except Exception:
+                    profile = {
+                        "runtime": "unknown",
+                        "recommended_bind": "127.0.0.1",
+                        "hints": [],
+                    }
                 self._json({
                     "setup_needed": config.setup_needed(CFG),
                     "user": CFG.panel.get("user", "admin"),
                     "bind": CFG.panel.get("bind", "0.0.0.0"),
                     "port": CFG.panel.get("port", 8788),
+                    "runtime": profile.get("runtime"),
+                    "recommended_bind": profile.get("recommended_bind"),
+                    "wifi_scan_available": profile.get("wifi_scan_available"),
+                    "wifi_nearby_optional": profile.get("wifi_nearby_optional", True),
+                    "hints": profile.get("hints") or [],
                 })
             elif path == "/api/logs":
                 try:

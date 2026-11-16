@@ -18,7 +18,8 @@
       <span class="pulse-dot" aria-hidden="true"></span>
       <h1 id="setupTitle">WIFI-ZERO</h1>
     </div>
-    <p class="sub">Primera configuración · sin terminal</p>
+    <p class="sub" id="setupSub">Primera configuración · Pi/PC + PWA</p>
+    <ul class="hint" id="hints" hidden></ul>
     <label for="user">Usuario
       <input id="user" name="username" autocomplete="username" value="admin" required>
     </label>
@@ -30,20 +31,40 @@
     </label>
     <fieldset class="setup-bind">
       <legend>Acceso al panel</legend>
-      <label class="tog"><input type="radio" name="bind" value="127.0.0.1" checked> Solo este dispositivo (127.0.0.1)</label>
-      <label class="tog"><input type="radio" name="bind" value="0.0.0.0"> Toda la LAN (0.0.0.0)</label>
+      <label class="tog"><input type="radio" name="bind" id="bindLocal" value="127.0.0.1"> Solo este dispositivo (127.0.0.1)</label>
+      <label class="tog"><input type="radio" name="bind" id="bindLan" value="0.0.0.0"> Toda la LAN (0.0.0.0) — teléfono PWA → Pi/PC</label>
+      <p class="hint" id="bindHint">HTTP sin TLS: usa 0.0.0.0 solo en red de confianza. Ver docs/SECURITY.md.</p>
     </fieldset>
     <label class="tog"><input type="checkbox" id="startMon" checked> Arrancar monitor al terminar</label>
     <button class="btn primary" type="submit" id="go">Crear y entrar</button>
+    <p class="hint" id="pwaHint">Tras el setup: en el teléfono abre http://&lt;IP-del-Pi&gt;:8788 e «Añadir a pantalla de inicio».</p>
     <p class="err" id="err" role="alert" aria-live="assertive"></p>
   </form>
 <script>
 (async () => {
+  let recommended = "127.0.0.1";
   try {
     const r = await fetch("/api/setup/status");
     const d = await r.json();
     if (!d.setup_needed) location.href = "/login";
+    if (d.recommended_bind) recommended = d.recommended_bind;
+    if (d.runtime === "linux") {
+      document.getElementById("setupSub").textContent =
+        "Host Linux/Pi · el teléfono solo abre la PWA";
+    } else if (d.runtime === "termux") {
+      document.getElementById("setupSub").textContent =
+        "Termux (legado) · preferible migrar el cerebro a un Pi/PC";
+    }
+    const box = document.getElementById("hints");
+    if (d.hints && d.hints.length) {
+      box.hidden = false;
+      box.innerHTML = d.hints.slice(0, 4).map((h) => `<li>${h}</li>`).join("");
+    }
   } catch (e) {}
+  const lan = document.getElementById("bindLan");
+  const local = document.getElementById("bindLocal");
+  if (recommended === "0.0.0.0") lan.checked = true;
+  else local.checked = true;
 })();
 const err = document.getElementById("err");
 document.getElementById("form").addEventListener("submit", async (e) => {

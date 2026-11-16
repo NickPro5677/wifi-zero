@@ -1,114 +1,138 @@
-# Instalación — Termux (Android, sin root)
+# Instalación — híbrido Pi/PC + PWA (recomendado)
 
-Checklist canónico para el primer día. Tras esto, el día a día es el panel/PWA.
+El **cerebro** corre en Linux (Debian / Ubuntu / Raspberry Pi OS). El
+**teléfono solo abre el panel** (navegador → PWA). Termux queda documentado
+al final como camino opcional/legado.
 
-## 1. Paquetes Termux
+## Checklist first-run (Pi + teléfono)
+
+| # | Paso | Verificación |
+|---|------|----------------|
+| 1 | `apt install python3 nmap iproute2 curl` | `python3 --version`, `nmap -V`, `ip -br addr` |
+| 2 | Clonar repo y `export WZ_SESSION_SECRET=…` | `echo "$WZ_SESSION_SECRET" \| wc -c` ~65 |
+| 3 | Arrancar (`./start_all.sh` o systemd) | `logs/supervisor.pid` vivo / `systemctl status wifi-zero` |
+| 4 | Anotar IP LAN del Pi | p. ej. `192.168.1.50` |
+| 5 | En el teléfono: `http://<IP>:8788` → `/setup` | Usuario + contraseña |
+| 6 | Bind **`0.0.0.0`** (LAN de confianza) | Panel alcanzable desde el móvil |
+| 7 | Instalar PWA («Añadir a pantalla de inicio») | Icono en el launcher |
+| 8 | Panel → Sistema → Checks | Interfaz LAN + OUI + panel OK; Wi‑Fi scan = opcional |
+
+---
+
+## 1. Paquetes (Debian / Ubuntu / Raspberry Pi OS)
+
+```sh
+sudo apt update
+sudo apt install -y python3 nmap iproute2 curl git
+```
+
+No hace falta `pip`. `nmap` aporta el OUI (`/usr/share/nmap/nmap-mac-prefixes`).
+
+## 2. Clonar y secreto de sesión
+
+```sh
+cd ~
+git clone https://github.com/NickPro5677/wifi-zero.git
+cd wifi-zero
+
+mkdir -p ~/.wifi-zero
+python3 -c "import secrets; print(secrets.token_hex(32))" > ~/.wifi-zero/session_secret
+chmod 600 ~/.wifi-zero/session_secret
+echo 'export WZ_SESSION_SECRET="$(cat ~/.wifi-zero/session_secret)"' >> ~/.bashrc
+export WZ_SESSION_SECRET="$(cat ~/.wifi-zero/session_secret)"
+```
+
+Sin `WZ_SESSION_SECRET`, cada reinicio invalida el login (HMAC nuevo).
+
+## 3. Arranque manual
+
+```sh
+./start_all.sh
+# o: python3 -m core
+```
+
+Abre en el Pi `http://127.0.0.1:8788` o, desde el teléfono (tras setup con
+bind LAN), `http://<IP-del-Pi>:8788`.
+
+## 4. systemd (recomendado en Pi)
+
+Hay una unidad de ejemplo en [`deploy/wifi-zero.service`](../deploy/wifi-zero.service).
+
+Resumen:
+
+```sh
+sudo useradd -r -s /usr/sbin/nologin -d /opt/wifi-zero wifi-zero || true
+sudo mkdir -p /opt/wifi-zero /etc/wifi-zero
+sudo rsync -a --exclude .git ./ /opt/wifi-zero/
+sudo chown -R wifi-zero:wifi-zero /opt/wifi-zero
+
+sudo install -m 600 /dev/null /etc/wifi-zero/session_secret
+python3 -c "import secrets; print(secrets.token_hex(32))" \
+  | sudo tee /etc/wifi-zero/session_secret >/dev/null
+sudo chown wifi-zero:wifi-zero /etc/wifi-zero/session_secret
+
+# Edita WorkingDirectory/User si hace falta, luego:
+sudo cp /opt/wifi-zero/deploy/wifi-zero.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now wifi-zero
+sudo systemctl status wifi-zero
+```
+
+## 5. Teléfono = cliente PWA
+
+1. Conéctate a la **misma Wi‑Fi** que el Pi.
+2. Abre `http://<IP-del-Pi>:8788`.
+3. Completa `/setup` si es la primera vez (usuario, contraseña, bind LAN).
+4. En el navegador: **Añadir a pantalla de inicio** / Instalar app.
+5. Opera start/stop, ajustes, hosts y eventos desde la PWA — sin Termux.
+
+### Bind y seguridad
+
+- `127.0.0.1` — solo procesos locales del Pi (seguro; el teléfono no llega).
+- `0.0.0.0` — necesario para la PWA en el móvil. HTTP **sin TLS**: el Bearer
+  viaja en claro en tu LAN. Solo en red de confianza; ver `docs/SECURITY.md`.
+
+## 6. Escaneo Wi‑Fi cercano (opcional)
+
+En el Pi **no** hace falta Termux:API. El inventario de hosts usa ARP/LAN.
+«Escanear cercanas» en Radio solo aplica si aún corres wifi-zero (o las
+herramientas) en un teléfono con Termux:API + permisos.
+
+---
+
+## Termux (opcional / legado)
+
+Úsalo solo si quieres el cerebro en el Android. El camino principal es Pi+PWA.
+
+### Paquetes
 
 ```sh
 pkg update
 pkg install python nmap termux-api termux-services curl
 ```
 
-Opcional pero útil para arranque al encender / Widget:
+Instala la app **Termux:API**. Permisos: ubicación + Wi‑Fi cercanas (Android 13+).
+
+### Arranque
 
 ```sh
-pkg install termux-widget   # atajos en la pantalla de inicio
-# Termux:Boot se instala desde F-Droid / Play como app aparte
-```
-
-Instala también la app **Termux:API** (F-Droid/Play) — sin ella no hay
-`termux-wifi-scaninfo` / `termux-wifi-connectioninfo` / batería.
-
-## 2. Permisos Android
-
-En Ajustes del sistema → Apps → Termux / Termux:API:
-
-- Ubicación (necesaria para escaneo Wi‑Fi en Android 6+)
-- Red / Wi‑Fi cercanas (Android 13+)
-- Notificaciones (si usas `termux-notification` / pushes)
-
-El escaneo de redes cercanas es **pasivo**: solo lee lo que el SO reporta
-(SSID, BSSID, canal, RSSI, cifrado). Sin estos permisos, `/api/wifi/scan`
-devolverá error o lista vacía. Ver `docs/ETHICS.md`.
-
-## 3. Clonar y arrancar
-
-```sh
-cd ~
-git clone https://github.com/NickPro5677/wifi-zero.git   # o tu fork
-cd wifi-zero
+cd ~/wifi-zero
+# mismo WZ_SESSION_SECRET que arriba
 ./start_all.sh
+# Abre http://127.0.0.1:8788 → /setup
 ```
 
-Abre `http://127.0.0.1:8788` → wizard `/setup` (usuario, contraseña, bind).
+### Termux:Boot / Widget
 
-## 4. Persistir `WZ_SESSION_SECRET` (imprescindible)
+Preferible migrar a systemd en un Pi. Si permaneces en Termux:
 
-Sin esto, cada reinicio del proceso genera un secreto HMAC nuevo y **invalida
-todas las sesiones** (tienes que volver a hacer login).
+`~/.termux/boot/wifi-zero.sh` → `bash scripts/watchdog.sh` (ver historial del repo
+o comentarios en `scripts/watchdog.sh`).
 
-```sh
-# una vez
-mkdir -p ~/.wifi-zero
-python3 -c "import secrets; print(secrets.token_hex(32))" > ~/.wifi-zero/session_secret
-chmod 600 ~/.wifi-zero/session_secret
-
-# en ~/.bashrc (o el script de boot):
-export WZ_SESSION_SECRET="$(cat ~/.wifi-zero/session_secret)"
-```
-
-Comprueba: `echo "$WZ_SESSION_SECRET" | wc -c` debe ser ~65.
-
-## 5. Arranque al encender (Termux:Boot)
-
-1. Instala **Termux:Boot**.
-2. Crea `~/.termux/boot/wifi-zero.sh`:
-
-```sh
-#!/data/data/com.termux/files/usr/bin/sh
-# Arranca wifi-zero al encender el teléfono.
-export WZ_SESSION_SECRET="$(cat "$HOME/.wifi-zero/session_secret" 2>/dev/null)"
-cd "$HOME/wifi-zero" || exit 0
-sleep 8
-bash scripts/watchdog.sh
-```
-
-```sh
-chmod +x ~/.termux/boot/wifi-zero.sh
-```
-
-El watchdog comprueba `logs/supervisor.pid` y, si hace falta, lanza
-`python3 -m core` (un solo proceso).
-
-## 6. Termux:Widget (arranque manual con un toque)
-
-```sh
-mkdir -p ~/.shortcuts
-cat > ~/.shortcuts/wifi-zero <<'EOF'
-#!/data/data/com.termux/files/usr/bin/sh
-export WZ_SESSION_SECRET="$(cat "$HOME/.wifi-zero/session_secret" 2>/dev/null)"
-cd "$HOME/wifi-zero" && bash scripts/watchdog.sh
-EOF
-chmod +x ~/.shortcuts/wifi-zero
-```
-
-Añade el widget de Termux en la pantalla de inicio y elige `wifi-zero`.
-
-## 7. Checklist post-setup
-
-| Paso | Cómo verificar |
-|------|----------------|
-| Paquetes | `./checks.sh` o panel → Sistema → Checks |
-| OUI (nmap) | `[ok] nmap OUI db` |
-| Wi‑Fi API | `[ok] termux-wifi-scaninfo` |
-| Supervisor | `logs/supervisor.pid` vivo |
-| Panel | `http://127.0.0.1:8788` responde |
-| Sesión estable | `WZ_SESSION_SECRET` exportado |
-| Bind | Preferir `127.0.0.1`; `0.0.0.0` solo en LAN de confianza (Bearer en claro) |
-| PWA | Añadir a pantalla de inicio desde el navegador |
+---
 
 ## Notas
 
-- **Zero pip**: no hace falta `pip install`; CI y local usan `unittest` stdlib.
-- Bind `0.0.0.0` expone el Bearer por HTTP en la Wi‑Fi: ver `docs/SECURITY.md`.
+- **Zero pip**: CI y local usan `unittest` stdlib.
 - Recuperación de contraseña (legado): `python3 scripts/set_password.py`.
+- Checks: `./checks.sh` o panel → Sistema → Checks (Termux:API marcado opcional en Linux).

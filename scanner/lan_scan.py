@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""LAN scanner for wifi-zero (works WITHOUT root on Android/Termux).
+"""LAN scanner for wifi-zero (Linux/Pi primario; Termux sin root ok).
 
-Strategy (no raw sockets available on stock Android):
+Strategy (sin raw sockets / sin root):
   1. Enumerate our own interface from `ip -br addr`.
   2. Read the kernel neighbour/ARP table (`ip neigh show dev <iface>`), which
      is the ground truth of who is physically on the LAN (no privileges needed).
@@ -20,20 +20,20 @@ import concurrent.futures as cf
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE_DIR, "core"))
 import db  # noqa: E402
-
-PREFIX = "/data/data/com.termux/files/usr"
+import runtime  # noqa: E402
 
 WARM_PORTS = [53, 80, 443]
 SCAN_PORTS = [22, 53, 80, 123, 443, 445, 554, 1900, 5060, 5353, 8000, 8080, 8443, 8888, 9090, 49152]
 
-OUI_FILE = os.path.join(PREFIX, "share", "nmap", "nmap-mac-prefixes")
-
-IP_CMD = "/system/bin/ip"
+# Compat: tests/legado pueden leer estos nombres; se resuelven al import.
+OUI_FILE = runtime.oui_file()
+IP_CMD = runtime.ip_cmd()
 
 
 def _ip(args):
-    """Run the Android `ip` binary (not on PATH in Termux)."""
-    return subprocess.run([IP_CMD] + args, capture_output=True, text=True).stdout
+    """Run `ip` (Android system path o iproute2 en Linux)."""
+    cmd = runtime.ip_cmd()
+    return subprocess.run([cmd] + args, capture_output=True, text=True).stdout
 
 
 # ---------------------------------------------------------------- interfaces
@@ -52,14 +52,26 @@ def list_interfaces():
 
 
 def resolve_iface(ifname="wlan0"):
+    """Resuelve iface; en Pi suele ser eth0/wlan0. Devuelve dict o None.
+
+    Además de los datos ip/prefix, incluye ``name`` con el nombre real elegido
+    (útil cuando el default wlan0 no existe y caemos a eth0).
+    """
     ifs = list_interfaces()
     if ifname in ifs:
-        return ifs[ifname]
+        d = dict(ifs[ifname])
+        d["name"] = ifname
+        return d
     for n, d in ifs.items():
-        if str(d["ip"]).startswith(("192.168.", "10.")):
-            return d
+        if str(d["ip"]).startswith(("192.168.", "10.", "172.")):
+            out = dict(d)
+            out["name"] = n
+            return out
     if ifs:
-        return next(iter(ifs.values()))
+        n = next(iter(ifs))
+        out = dict(ifs[n])
+        out["name"] = n
+        return out
     return None
 
 
@@ -175,8 +187,9 @@ def _load_oui():
     if _oui is not None:
         return _oui
     _oui = {}
-    if os.path.exists(OUI_FILE):
-        with open(OUI_FILE, "r", errors="ignore") as f:
+    path = runtime.oui_file()
+    if os.path.exists(path):
+        with open(path, "r", errors="ignore") as f:
             for line in f:
                 m = re.match(r"^([0-9A-Fa-f]{6})\s+(.+)$", line.strip())
                 if m:
@@ -204,7 +217,7 @@ def nmap_service_probe(ip, ports, ifname="wlan0", nmap_bin=None):
     Usa scan TCP connect (funciona sin root). Se limita a puertos concretos para
     no arrastrar nmap por todo el rango en el móvil.
     """
-    nmap_bin = nmap_bin or "/data/data/com.termux/files/usr/bin/nmap"
+    nmap_bin = nmap_bin or runtime.nmap_bin()
     if not ports:
         return {}
     targets = ",".join(str(p) for p in ports)
@@ -241,7 +254,7 @@ def _parse_nmap_sv(text):
 def nse_broadcast_scan(ifname="wlan0", timeout=20):
     """Corre scripts broadcast de nmap que SÍ funcionan sin privilegios
     (detección de dispositivos por DNS-SD / SSDP de la red). Devuelve texto crudo."""
-    nmap_bin = "/data/data/com.termux/files/usr/bin/nmap"
+    nmap_bin = runtime.nmap_bin()
     scripts = "broadcast-dns-service-discovery,broadcast-upnp-info"
     out = subprocess.run(
         [nmap_bin, "--script", scripts, "-e", ifname, "-n"],
@@ -272,6 +285,8 @@ def scan_once(ifname="wlan0", cfg=None, deep=False):
         print("[lan] no usable interface")
         return {"live": {}, "gateway": None, "base": None}
 
+    # usar el nombre real (eth0 en Pi cableada, wlan0 en Wi‑Fi, etc.)
+    ifname = iface.get("name") or ifname
     base = iface_to_range(iface)
     cidr = f"{base}/24"
     print(f"[lan] scanning {cidr} via {ifname} ({iface['ip']})")

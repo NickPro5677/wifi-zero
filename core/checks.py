@@ -7,40 +7,68 @@ import shutil
 import subprocess
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PREFIX = "/data/data/com.termux/files/usr"
-IP_CMD = "/system/bin/ip"
-OUI = os.path.join(PREFIX, "share", "nmap", "nmap-mac-prefixes")
-WIFI_SCAN = os.path.join(PREFIX, "bin", "termux-wifi-scaninfo")
+
+import runtime  # noqa: E402
 
 
-def _ok(name, ok, detail=""):
-    return {"name": name, "ok": bool(ok), "detail": detail or ("ok" if ok else "fail")}
+def _ok(name, ok, detail="", *, optional=False):
+    return {
+        "name": name,
+        "ok": bool(ok),
+        "detail": detail or ("ok" if ok else "fail"),
+        "optional": bool(optional),
+    }
 
 
 def run_checks(port=8788, supervisor=None):
-    """Lista de chequeos. Tolerante fuera de Termux (marca fail, no explota)."""
+    """Lista de chequeos. Termux:API es opcional en Linux/Pi."""
     results = []
+    linux = runtime.is_linux_host()
+    ip_bin = runtime.ip_cmd()
 
-    # interfaz wlan0 con IP privada
-    wlan_ok, wlan_detail = False, "sin ip"
+    # cualquier iface con IP privada (wlan0/eth0/…)
+    iface_ok, iface_detail = False, "sin ip privada"
     try:
         out = subprocess.run(
-            [IP_CMD, "-brief", "addr", "show", "wlan0"],
+            [ip_bin, "-brief", "addr"],
             capture_output=True, text=True, timeout=3,
         )
         text = out.stdout or ""
-        if any(p in text for p in ("192.168.", "10.", "172.")):
-            wlan_ok, wlan_detail = True, text.strip()[:120]
-        else:
-            wlan_detail = text.strip()[:120] or "wlan0 sin IPv4 privada"
+        for line in text.splitlines():
+            if any(p in line for p in ("192.168.", "10.", "172.")):
+                # descartar loopback-like; 127. ya no matchea los prefijos
+                iface_ok, iface_detail = True, line.strip()[:120]
+                break
+        if not iface_ok:
+            iface_detail = (text.strip()[:120] or "sin IPv4 privada en ifaces")
     except Exception as e:
-        wlan_detail = str(e)
-    results.append(_ok("interfaz wlan0", wlan_ok, wlan_detail))
+        iface_detail = str(e)
+    results.append(_ok("interfaz LAN", iface_ok, iface_detail))
 
-    results.append(_ok("ip (system)", os.path.isfile(IP_CMD) and os.access(IP_CMD, os.X_OK), IP_CMD))
-    results.append(_ok("nmap OUI db", os.path.isfile(OUI), OUI))
-    results.append(_ok("termux-wifi-scaninfo",
-                       os.path.isfile(WIFI_SCAN) and os.access(WIFI_SCAN, os.X_OK), WIFI_SCAN))
+    ip_ok = bool(shutil.which(ip_bin) or (os.path.isfile(ip_bin) and os.access(ip_bin, os.X_OK)))
+    results.append(_ok("ip (iproute2)", ip_ok, ip_bin))
+
+    oui = runtime.oui_file()
+    results.append(_ok("nmap OUI db", os.path.isfile(oui), oui))
+
+    # Escaneo Wi‑Fi cercano: obligatorio solo en Termux; en Linux es opcional
+    scan_bin = runtime.wifi_scaninfo_bin()
+    scan_ok = bool(
+        scan_bin and os.path.isfile(scan_bin) and os.access(scan_bin, os.X_OK)
+    )
+    if linux:
+        detail = (
+            scan_bin if scan_ok
+            else "opcional — no instalado (normal en Pi/PC; LAN no lo necesita)"
+        )
+        # no marca el resumen como fallido
+        results.append(_ok("termux-wifi-scaninfo (opcional)", True, detail, optional=True))
+    else:
+        results.append(_ok(
+            "termux-wifi-scaninfo",
+            scan_ok,
+            scan_bin or "no encontrado (pkg install termux-api)",
+        ))
 
     # python + sqlite3 + import db
     try:
@@ -87,8 +115,15 @@ def run_checks(port=8788, supervisor=None):
             pass
     results.append(_ok("monitor corriendo", mon_ok, detail))
 
-    all_ok = all(r["ok"] for r in results)
-    return {"ok": all_ok, "checks": results, "summary": "TODO OK" if all_ok else "hay fallos"}
+    # solo fallan los chequeos no opcionales
+    required = [r for r in results if not r.get("optional")]
+    all_ok = all(r["ok"] for r in required)
+    return {
+        "ok": all_ok,
+        "checks": results,
+        "summary": "TODO OK" if all_ok else "hay fallos",
+        "runtime": "linux" if linux else "termux",
+    }
 
 
 def make_backup(retain_days=7):

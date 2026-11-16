@@ -190,6 +190,10 @@ class TestSetupAndAuth(unittest.TestCase):
         code, body = _http("GET", self.h.url("/api/setup/status"))
         self.assertEqual(code, 200)
         self.assertTrue(body["setup_needed"])
+        self.assertIn("runtime", body)
+        self.assertIn("recommended_bind", body)
+        self.assertIn(body["recommended_bind"], ("127.0.0.1", "0.0.0.0"))
+        self.assertIn("hints", body)
 
     def test_setup_creates_session(self):
         self.h = ControlPlaneHarness(password=None)

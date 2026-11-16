@@ -1,22 +1,31 @@
 # -*- coding: utf-8 -*-
-"""Notificaciones (F2/F5): termux-notification en el móvil + push opcional
-(ntfy / Telegram) hacia otro dispositivo configurable en config.json."""
+"""Notificaciones (F2/F5): termux-notification (opcional) + push
+(ntfy / Telegram) hacia otro dispositivo configurable en config.json.
+
+En Pi/PC no hay termux-notification: se usan pushes remotos si están activos.
+"""
 import os
 import subprocess
 import urllib.request
 
+# Compat; la resolución real usa runtime.notify_bin()
 NOTIFY_BIN = "/data/data/com.termux/files/usr/bin/termux-notification"
 LEVELS = {"info": 0, "warn": 1, "crit": 2}
 LEVEL_ICONS = {"info": "ℹ", "warn": "⚠", "crit": "🚨"}
 
 
 def local_push(title, msg, level="warn", channel="wifi-zero"):
-    """Notificación nativa Android si termux-api está instalado."""
-    if not os.path.exists(NOTIFY_BIN):
+    """Notificación nativa Android si termux-api está instalado (opcional)."""
+    try:
+        import runtime
+        bin_path = runtime.notify_bin() or NOTIFY_BIN
+    except Exception:
+        bin_path = NOTIFY_BIN
+    if not bin_path or not os.path.exists(bin_path):
         return False
     try:
         subprocess.run(
-            [NOTIFY_BIN, "-t", f"{LEVEL_ICONS.get(level,'')} {title}",
+            [bin_path, "-t", f"{LEVEL_ICONS.get(level,'')} {title}",
              "-c", msg, "--alert-once"],
             timeout=4, check=False,
         )

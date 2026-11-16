@@ -1,0 +1,46 @@
+# Sample systemd unit — wifi-zero on Debian / Ubuntu / Raspberry Pi OS
+#
+# Install (as root), after cloning the repo and creating the session secret:
+#
+#   sudo useradd -r -s /usr/sbin/nologin -d /opt/wifi-zero wifi-zero || true
+#   sudo mkdir -p /etc/wifi-zero /opt/wifi-zero
+#   # copy or clone the repo into /opt/wifi-zero and chown -R wifi-zero:wifi-zero
+#   sudo install -m 600 /dev/null /etc/wifi-zero/session_secret
+#   python3 -c "import secrets; print(secrets.token_hex(32))" | sudo tee /etc/wifi-zero/session_secret >/dev/null
+#   sudo chmod 600 /etc/wifi-zero/session_secret
+#   sudo chown wifi-zero:wifi-zero /etc/wifi-zero/session_secret
+#   sudo cp deploy/wifi-zero.service /etc/systemd/system/wifi-zero.service
+#   # edit WorkingDirectory / User / paths below if needed
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now wifi-zero
+#
+# Panel: http://<IP-del-Pi>:8788  (elige bind 0.0.0.0 en /setup)
+# Phone: open that URL → Add to Home Screen (PWA)
+
+[Unit]
+Description=wifi-zero LAN monitor (panel + ARP brain)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wifi-zero
+Group=wifi-zero
+WorkingDirectory=/opt/wifi-zero
+Environment=WZ_RUNTIME=linux
+EnvironmentFile=-/etc/wifi-zero/environment
+# Persist HMAC secret so restarts do not invalidate sessions:
+Environment=WZ_SESSION_SECRET_FILE=/etc/wifi-zero/session_secret
+ExecStartPre=/bin/sh -c 'test -s /etc/wifi-zero/session_secret'
+ExecStart=/bin/sh -c 'export WZ_SESSION_SECRET="$(cat /etc/wifi-zero/session_secret)"; exec /usr/bin/python3 -m core'
+Restart=on-failure
+RestartSec=5
+# Soft hardening (adjust if you need extra devices)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/wifi-zero
+
+[Install]
+WantedBy=multi-user.target
