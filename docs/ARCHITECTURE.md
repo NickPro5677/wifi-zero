@@ -48,4 +48,7 @@ lan_scan / wifi_track │
 - **Zero deps** Python stdlib.
 - **PWA-first**: la terminal no es la UI diaria.
 - **Migraciones append-only** en `db.py`.
-- Bind por defecto `0.0.0.0`; en setup se sugiere `127.0.0.1` para cerrojo.
+- Bind por defecto `127.0.0.1` (Bearer no en claro en la LAN); en `/setup` se
+  puede elegir `0.0.0.0` conscientemente. Ver `docs/SECURITY.md`.
+- Watchdog / boot: `scripts/watchdog.sh` reinicia `python3 -m core` vía
+  `logs/supervisor.pid` (no monitor+server separados).

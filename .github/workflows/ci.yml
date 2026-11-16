@@ -16,7 +16,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Instalar pytest
-        run: pip install pytest==9.1.1
-      - name: Pruebas
-        run: python -m pytest -q
+      - name: Pruebas (unittest, sin pip)
+        run: python -m unittest discover -s tests -q

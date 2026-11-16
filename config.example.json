@@ -10,7 +10,7 @@
   },
   "panel": {
     "port": 8788,
-    "bind": "0.0.0.0",
+    "bind": "127.0.0.1",
     "auth": true,
     "user": "admin",
     "password": ""

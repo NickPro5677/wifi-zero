@@ -92,15 +92,41 @@ def run_checks(port=8788, supervisor=None):
 
 
 def make_backup(retain_days=7):
-    """Copia data/wifi.db → data/backups/wifi-<ts>.db y poda antiguos."""
+    """Snapshot consistente de data/wifi.db → data/backups/wifi-<ts>.db.
+
+    Usa la API de backup de sqlite3 (WAL-safe). Si falla, hace
+    ``PRAGMA wal_checkpoint(TRUNCATE)`` y copia como fallback.
+    """
+    import sqlite3
     import time
+
     src = os.path.join(BASE_DIR, "data", "wifi.db")
     bak_dir = os.path.join(BASE_DIR, "data", "backups")
     os.makedirs(bak_dir, exist_ok=True)
     if not os.path.isfile(src):
         return {"ok": False, "error": "no existe data/wifi.db"}
     dest = os.path.join(bak_dir, time.strftime("wifi-%Y%m%d-%H%M.db"))
-    shutil.copy2(src, dest)
+    try:
+        src_con = sqlite3.connect(src, timeout=8)
+        try:
+            dst_con = sqlite3.connect(dest)
+            try:
+                src_con.backup(dst_con)
+            finally:
+                dst_con.close()
+        finally:
+            src_con.close()
+    except Exception as e:
+        # fallback: checkpoint + copy (mejor que un cp a ciegas)
+        try:
+            con = sqlite3.connect(src, timeout=8)
+            try:
+                con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            finally:
+                con.close()
+            shutil.copy2(src, dest)
+        except Exception as e2:
+            return {"ok": False, "error": f"backup falló: {e}; fallback: {e2}"}
     # poda
     cutoff = time.time() - retain_days * 86400
     removed = []

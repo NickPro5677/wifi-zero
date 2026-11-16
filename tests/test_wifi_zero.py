@@ -382,6 +382,14 @@ class TestAuthPassword(unittest.TestCase):
         self.assertTrue(auth.verify_password("secreto123", h))
         self.assertFalse(auth.verify_password("otra", h))
 
+    def test_tokens_survive_mac_with_dot_bytes(self):
+        """El MAC es binario; un separador '.' rompía ~1/8 de los tokens."""
+        import auth
+        for i in range(64):
+            tok = auth.create_token(f"user{i}")
+            self.assertTrue(auth.verify_token(tok, f"user{i}"), f"i={i}")
+            self.assertFalse(auth.verify_token(tok, "otro"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
