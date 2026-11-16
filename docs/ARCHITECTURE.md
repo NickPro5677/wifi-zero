@@ -1,50 +1,51 @@
 # Arquitectura
 
-## Visión general
+## Visión general (v4)
 wifi-zero es un sistema de **vigilancia pasiva/activa de la propia red local** que
-corre íntegramente en Termux (Android) **sin root**. Todo en Python 3.14 stdlib.
+corre íntegramente en Termux (Android) **sin root**. Todo en Python 3 stdlib.
 
 ```
-┌────────────┐   ┌───────────────────────┐   ┌─────────────┐   ┌──────────────────┐
-│ monitor.py │──▶│ lan_scan.py  (ARP+TCP) │──▶│    SQLite   │◀──│ server.py (panel) │
-│  (loop)    │──▶│ wifi_track.py (API)    │──▶│  wifi.db    │   │   stdlib HTTP    │
-│            │   │ sb_scan (nmap -sV/NSE) │   │ (migrado v2)│──▶│ SSE · auth · SVG │
-└────────────┘   └───────────────────────┘   └─────────────┘   └──────────────────┘
-      │ print/log                                ▲                    │
-      └─▶ rules.py ─channel_eventos→ notifications (notify.py)
+┌────────────────────┐
+│  python3 -m core   │  ← arranque único (start_all.sh)
+│  supervisor.py     │
+└─────────┬──────────┘
+          │
+   ┌──────┴───────┐
+   ▼              ▼
+monitor (hilo)   server.py (HTTP + control API)
+   │                  │
+   ▼                  ▼
+lan_scan / wifi_track │
+   │                  │
+   └────► SQLite ◄────┘
+              ▲
+              │
+         panel/ PWA
 ```
 
 ## Módulos
 
-- `core/config.py` — carga y valida `config.json` sobre defaults.
-- `core/db.py` — conexión SQLite + **migraciones versionadas** (v1→v2). Al
-  añadir features: añade una entrada a `MIGRATIONS`, no edites las publicadas.
-- `core/monitor.py` — bucle: scan LAN + WiFi → motor de reglas → eventos/notif.
-  Battery-aware (pausa < 15 % sin carga) y gated por `supplicant_state`.
-- `core/rules.py` — reglas con cooldown por entidad (new_host, spoof, offline,
-  new_ap, downgrade cifrado, evil-twin, new_port, watchlist).
-- `core/threat.py` — scoring 0–100 + tiers (ok/warn/crit).
-- `core/notify.py` — termux-notification local + push opcional ntfy/Telegram.
-- `core/auth.py` — scrypt (hashlib, sin bcrypt) + tokens HMAC-SHA256 con expiración.
-- `core/server.py` — panel HTTP stdlib: REST + SSE + SVG. Auth opcional.
-  SSE relee SQLite (`_sse_pump`) porque el monitor es otro proceso.
-  `/api/dashboard` y `/api/health` alimentan la GUI v3.1.
-- `scanner/lan_scan.py` — detección hosts por `ip neigh` (tabla ARP) + TCP
-  connect; nmap -sV opcional; NSE broadcast (DNS-SD/SSDP).
-- `scanner/wifi_track.py` — Termux:API `wifi-scaninfo` + `connectioninfo` con
-  parse de `capabilities` (cifrado/channel/hidden).
-- `core/report.py` — reporte Markdown diario.
+- `core/supervisor.py` — entrypoint: panel + lifecycle del monitor.
+- `core/config.py` — carga/valida/guarda `config.json`; `public_dict`, `setup_needed`.
+- `core/db.py` — SQLite + migraciones versionadas.
+- `core/monitor.py` — bucle LAN/Wi‑Fi independientes, battery-aware, stop Event.
+- `core/rules.py` / `core/threat.py` — detección y scoring.
+- `core/server.py` — REST + SSE + PWA estáticos + plano de control.
+- `core/checks.py` — healthchecks y backup (API).
+- `core/auth.py` — scrypt + tokens HMAC.
+- `scanner/lan_scan.py` / `wifi_track.py` — adquisición sin root.
+- `panel/` — SPA/PWA (setup, ajustes, sistema, a11y).
 
-## Ciclo de vida de datos
+## Ciclo de vida
 
-1. El monitor arranca y registra su PID (`logs/monitor.pid`).
-2. Por ciclo escribe `runs`; cada host nuevo/gone/port → `events`; cada AP/estación
-   → `aps`/`stations`/`signals` (telemetría histórica).
-3. El panel lee SQLite en cada request y el SSE entrega eventos a los clientes.
+1. `start_all.sh` → `python3 -m core` (supervisor).
+2. Si no hay password → panel redirige a `/setup`.
+3. Tras setup (o si ya hay password) el monitor arranca solo.
+4. El usuario opera start/stop/config/checks/backup solo desde el navegador/PWA.
 
 ## Decisiones clave
 
-- **Zero deps**: Python stdlib (http.server, sqlite3, hashlib.scrypt, threads).
-- **Migraciones**: `schema_version` real, no `CREATE IF NOT EXISTS` a ciegas.
-- El bind del panel es `0.0.0.0` por defecto; para no exponerlo usa
-  `panel.bind=127.0.0.1` en `config.json`.
+- **Zero deps** Python stdlib.
+- **PWA-first**: la terminal no es la UI diaria.
+- **Migraciones append-only** en `db.py`.
+- Bind por defecto `0.0.0.0`; en setup se sugiere `127.0.0.1` para cerrojo.

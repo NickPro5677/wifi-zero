@@ -1,5 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/sh
 # wifi-zero backup manual -> data/backups/wifi-<ts>.db (retiene 7 días).
+# Legado CLI — preferible: panel → Sistema → Backup, o POST /api/backup
 cd "$(dirname "$0")/.."
 mkdir -p data/backups
 DEST="data/backups/wifi-$(date +%Y%m%d-%H%M).db"

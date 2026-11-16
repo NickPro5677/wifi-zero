@@ -1,5 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/sh
-# wifi-zero healthcheck
+# wifi-zero healthcheck (legado CLI — preferible: panel → Sistema → checks
+# o POST /api/checks)
 set -u
 cd "$(dirname "$0")"
 fail=0

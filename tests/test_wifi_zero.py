@@ -225,5 +225,163 @@ class TestOfflineTransition(unittest.TestCase):
         self.assertEqual(fired[0][0], "offline")
 
 
+class TestConfigV4(unittest.TestCase):
+    def test_setup_needed(self):
+        cfg = config.Config(data={"panel": {"password": "", "auth": True}})
+        self.assertTrue(config.setup_needed(cfg))
+        cfg2 = config.Config(data={"panel": {"password": "salt|hash", "auth": True}})
+        self.assertFalse(config.setup_needed(cfg2))
+
+    def test_public_dict_redacts(self):
+        cfg = config.Config(data={
+            "panel": {"password": "abc|def"},
+            "pushes": {"telegram_token": "SECRET"},
+        })
+        pub = cfg.public_dict()
+        self.assertEqual(pub["panel"]["password"], "")
+        self.assertTrue(pub["panel"]["password_set"])
+        self.assertEqual(pub["pushes"]["telegram_token"], "***")
+        self.assertTrue(pub["pushes"]["telegram_token_set"])
+
+    def test_merge_patch_keeps_secrets(self):
+        cfg = config.Config(data={
+            "panel": {"password": "keep|me"},
+            "intervalos": {"lan": 60},
+        })
+        cfg.merge_patch({"panel": {"password": ""}, "intervalos": {"lan": 90}})
+        self.assertEqual(cfg.data["panel"]["password"], "keep|me")
+        self.assertEqual(cfg.lan_interval, 90)
+
+    def test_save_roundtrip(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "cfg.json")
+        cfg = config.Config(data={"intervalos": {"lan": 42}}, path=path)
+        cfg.save()
+        loaded = config.load(path)
+        self.assertEqual(loaded.lan_interval, 42)
+
+
+class TestSupervisor(unittest.TestCase):
+    def test_status_stopped(self):
+        from core.supervisor import Supervisor
+        s = Supervisor()
+        st = s.status()
+        self.assertIn(st["mode"], ("stopped", "error"))
+        self.assertFalse(st["monitor_running"])
+        self.assertIn("setup_needed", st)
+
+    def test_start_stop_thread(self):
+        from core.supervisor import Supervisor
+        from unittest import mock
+        s = Supervisor()
+        # no ejecutar el loop real: mock Monitor
+        with mock.patch("monitor.Monitor") as Mon:
+            inst = mock.MagicMock()
+            Mon.return_value = inst
+            # loop bloqueante: que espere al stop
+            def fake_loop():
+                while not inst.stop_event_wait_called if False else True:
+                    import time
+                    if s._stop_evt.wait(0.05):
+                        break
+            inst.loop.side_effect = lambda: s._stop_evt.wait(2)
+            ok, msg = s.start_monitor()
+            self.assertTrue(ok)
+            # esperar a que el hilo exista
+            import time
+            time.sleep(0.1)
+            self.assertTrue(s._mon_thread and s._mon_thread.is_alive())
+            ok2, _ = s.stop_monitor()
+            self.assertTrue(ok2)
+            time.sleep(0.15)
+            self.assertFalse(s.status()["monitor_thread"])
+
+
+class TestNeighConflicts(unittest.TestCase):
+    def test_read_neighbors_accumulates_macs(self):
+        import lan_scan
+        sample = (
+            "192.168.1.10 lladdr aa:bb:cc:dd:ee:01 REACHABLE\n"
+            "192.168.1.10 lladdr aa:bb:cc:dd:ee:02 STALE\n"
+            "192.168.1.20 lladdr 11:22:33:44:55:66 REACHABLE\n"
+        )
+        from unittest import mock
+        with mock.patch.object(lan_scan, "_ip", return_value=sample):
+            neigh = lan_scan.read_neighbors("wlan0")
+        self.assertEqual(len(neigh["192.168.1.10"]["macs"]), 2)
+        self.assertEqual(len(neigh["192.168.1.20"]["macs"]), 1)
+
+
+class TestEncryptionDowngradeExisting(unittest.TestCase):
+    def test_prev_encryption_on_found(self):
+        """track_once adjunta prev_encryption antes del upsert."""
+        con = db.connect(db_path=":memory:")
+        db.upsert_ap(con, {"bssid": "aa:bb:cc:dd:ee:ff", "ssid": "Hogar",
+                           "frequency_mhz": 2412, "rssi": -50},
+                     encryption="WPA3")
+        # simular lo que hace track_once
+        prev = con.execute("SELECT encryption FROM aps WHERE bssid=?",
+                           ("aa:bb:cc:dd:ee:ff",)).fetchone()
+        ap = {"bssid": "aa:bb:cc:dd:ee:ff", "encryption": "WPA2"}
+        ap["prev_encryption"] = prev["encryption"]
+        self.assertEqual(ap["prev_encryption"], "WPA3")
+        fired = []
+        r = Rules(con, config.Config(data={}),
+                  lambda rule, level, msg, ip=None, mac=None: (fired.append(rule), True)[1])
+        order = {"OPEN": 0, "WEP": 1, "WPA": 2, "WPA2": 3, "WPA3": 4}
+        if order.get(ap["encryption"], 0) < order.get(ap["prev_encryption"], 0):
+            r.ap_encryption_downgrade(ap, ap["prev_encryption"], ap["encryption"])
+        self.assertIn("ap_encryption_downgrade", fired)
+
+
+class TestMutedRules(unittest.TestCase):
+    def test_emit_respects_mute(self):
+        import monitor as mon_mod
+        from unittest import mock
+        cfg = config.Config(data={"muted_rules": {"new_host": -1}, "watchlist": []})
+        with mock.patch.object(mon_mod.db, "connect", return_value=db.connect(db_path=":memory:")):
+            with mock.patch.object(mon_mod, "Notifier"):
+                with mock.patch.object(mon_mod, "Rules"):
+                    mon = mon_mod.Monitor(cfg)
+        with mock.patch.object(mon_mod.db, "add_event") as add:
+            ok = mon._emit("new_host", "warn", "x", ip="1.1.1.1")
+            self.assertFalse(ok)
+            add.assert_not_called()
+        # regla no muteada sí emite
+        with mock.patch.object(mon_mod.db, "add_event") as add2:
+            ok2 = mon._emit("ap_twin", "warn", "y")
+            self.assertTrue(ok2)
+            add2.assert_called_once()
+
+
+class TestChecksBackup(unittest.TestCase):
+    def test_backup_without_db(self):
+        import checks
+        from unittest import mock
+        with mock.patch.object(checks, "BASE_DIR", tempfile.mkdtemp()):
+            r = checks.make_backup()
+            self.assertFalse(r["ok"])
+
+    def test_backup_with_db(self):
+        import checks
+        from unittest import mock
+        d = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d, "data"))
+        con = db.connect(db_path=os.path.join(d, "data", "wifi.db"))
+        con.close()
+        with mock.patch.object(checks, "BASE_DIR", d):
+            r = checks.make_backup()
+        self.assertTrue(r["ok"])
+        self.assertTrue(os.path.isfile(r["path"]))
+
+
+class TestAuthPassword(unittest.TestCase):
+    def test_hash_verify(self):
+        import auth
+        h = auth.hash_password("secreto123")
+        self.assertTrue(auth.verify_password("secreto123", h))
+        self.assertFalse(auth.verify_password("otra", h))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

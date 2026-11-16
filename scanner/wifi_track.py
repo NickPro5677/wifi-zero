@@ -137,13 +137,18 @@ def get_link():
 
 
 def track_once(known_routers=None):
-    """Escanea y persiste; devuelve (aps, nuevos)."""
+    """Escanea y persiste; devuelve (aps, nuevos).
+
+    Cada AP en `found` incluye `prev_encryption` (cifrado en DB antes del
+    upsert) para que el monitor detecte downgrades en APs ya conocidos.
+    """
     known_routers = known_routers or set()
     con = db.connect()
     found = get_aps()
     new = []
     for ap in found:
         prev = con.execute("SELECT * FROM aps WHERE bssid=?", (ap["bssid"],)).fetchone()
+        ap["prev_encryption"] = (prev["encryption"] if prev else None)
         db.upsert_ap(
             con, ap,
             encryption=ap.get("encryption"),

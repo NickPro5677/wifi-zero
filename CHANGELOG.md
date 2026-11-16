@@ -1,5 +1,33 @@
 # Changelog
 
+## [4.0.0] - PWA como plano de control
+### Arquitectura
+- Supervisor único (`python3 -m core` / `./start_all.sh`): posee panel HTTP y
+  ciclo de vida del monitor (hilo con stop cooperativo).
+- La terminal queda solo para el arranque; el día a día es el panel/PWA.
+
+### Control plane API
+- `GET/PUT /api/config` (secretos redactados), `POST /api/password`, `POST /api/setup`.
+- `GET /api/control/status`, `POST /api/control/{start,stop,restart,pause,resume,scan}`.
+- `POST /api/checks`, `POST /api/backup`, `GET /api/logs`, `POST /api/rules/mute`.
+- `GET /export/events.csv`.
+
+### Panel
+- Wizard `/setup` (first-run), vistas **Ajustes** y **Sistema**.
+- PWA: `manifest.webmanifest` + service worker (shell cache; API/SSE network-first).
+- Accesibilidad: landmarks, skip-link, `aria-live`, foco visible,
+  `prefers-reduced-motion`, bottom nav móvil, labels en formularios.
+
+### Motor
+- `intervalos.wifi` independiente del ciclo LAN.
+- Conflictos IP: `read_neighbors` acumula varias MAC por IP.
+- Downgrade de cifrado en APs **existentes** (`prev_encryption` antes del upsert).
+- `muted_rules` en config + UI para silenciar reglas.
+
+### Deprecación
+- `scripts/set_password.py` y edición manual de config: legado (preferir panel).
+- `checks.sh` / `backup.sh` siguen; equivalentes en API/panel.
+
 ## [3.1.0] - panel v3.1 + correcciones de motor
 ### Correcciones
 - SSE no recibía eventos del monitor (otro proceso): bomba que lee SQLite y reemite.

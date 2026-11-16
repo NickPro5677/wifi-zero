@@ -1,23 +1,22 @@
 # -*- coding: utf-8 -*-
-"""wifi-zero monitor (F2/F5): bucle continuo integrado.
+"""wifi-zero monitor (F2/F5/v4): bucle continuo integrado.
 
 Cada ciclo: escanea LAN (n) y WiFi (wifi), pasa los cambios por el motor de
 reglas (Rules) → eventos en SQLite → notificaciones. Es battery-aware y cae
 a modo silencio si el teléfono se desenchufa con poca batería; además respeta
 el estado real de la red (si el supplicant NO está COMPLETED no escanea).
 
-v3:
-  - detección offline por transición de estado (prev alive → no visto ahora)
-  - modo eco: con poca batería se dobla el intervalo LAN y se omite nmap -sV
-  - cadencia de escaneo de servicios (intervalo `sv`) por separado del LAN
-  - serie histórica de riesgo por host (tabla scores)
-  - vigilancia de la puerta de enlace (cambio de MAC = posible MITM)
-  - detección de conflictos de IP y de MAC randomizadas (LAA)
+v4:
+  - intervalos LAN y WiFi independientes (`intervalos.wifi`)
+  - stop cooperativo (Event) para el supervisor
+  - modo operativo reportado (running/eco/paused/offline_wifi)
+  - downgrade de cifrado en APs existentes (prev_encryption del scan)
 """
 import json
 import os
 import subprocess
 import sys
+import threading
 import time
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -64,7 +63,7 @@ def wifi_gate():
 
 
 class Monitor:
-    def __init__(self, cfg):
+    def __init__(self, cfg, stop_event=None, supervisor=None):
         self.cfg = cfg
         self.con = db.connect()
         self.notifier = Notifier(cfg)
@@ -73,8 +72,37 @@ class Monitor:
         self._next_sv = 0.0
         self._next_prune = time.time() + 3600
         self._eco = False
+        self._stop = stop_event or threading.Event()
+        self.supervisor = supervisor
+        self.manual_pause = False
+        self.mode = "running"
+
+    def request_stop(self):
+        self._stop.set()
+
+    def _stopped(self):
+        return self._stop.is_set()
+
+    def _set_mode(self, mode):
+        self.mode = mode
+        if self.supervisor is not None:
+            try:
+                self.supervisor.set_mode(mode)
+            except Exception:
+                pass
 
     def _emit(self, rule, level, message, ip=None, mac=None):
+        # muted_rules: {rule: until_ts} — 0 o ausente = no mute; >now = activo; -1 = forever
+        muted = self.cfg.get("muted_rules", default={}) or {}
+        until = muted.get(rule)
+        if until is not None:
+            try:
+                until = int(until)
+            except (TypeError, ValueError):
+                until = 0
+            if until < 0 or until > time.time():
+                LOGGER.debug("regla %s silenciada hasta %s", rule, until)
+                return False
         db.add_event(self.con, rule, level, message, ip=ip, mac=mac)
         LOGGER.info("[%s·%s] %s", rule, level, message)
         self.notifier(rule, level, message, ip=ip, mac=mac)
@@ -139,7 +167,8 @@ class Monitor:
         for ip, ip_macs in (snap.get("conflicts") or {}).items():
             self.rs.ip_conflict(ip, list(ip_macs))
         # vigilancia del gateway (cambio de MAC = MITM clásico)
-        self._watch_gateway(snap.get("gateway"), macs)
+        if self.cfg.get("gateway_watch", default=True):
+            self._watch_gateway(snap.get("gateway"), macs)
         # puertos que se abrieron en este mismo ciclo
         for p in db.all_ports(self.con):
             if p["first_seen"] == p["last_seen"]:
@@ -184,14 +213,19 @@ class Monitor:
             return
         if self._first:
             return
-        for ap in new_aps:
+        new_bssids = {a.get("bssid") for a in new_aps if a.get("bssid")}
+        for ap in found:
             if not ap.get("bssid"):
                 continue
-            self.rs.ap_new(ap)
-            prev = self.con.execute("SELECT encryption FROM aps WHERE bssid=?",
-                                    (ap["bssid"],)).fetchone()
-            if prev and prev["encryption"] and prev["encryption"] != ap.get("encryption"):
-                self.rs.ap_encryption_downgrade(ap, prev["encryption"], ap.get("encryption"))
+            if ap.get("bssid") in new_bssids:
+                self.rs.ap_new(ap)
+            prev_enc = ap.get("prev_encryption")
+            new_enc = ap.get("encryption")
+            if prev_enc and new_enc and prev_enc != new_enc:
+                # solo alertar si es un downgrade real
+                order = {"OPEN": 0, "WEP": 1, "WPA": 2, "WPA2": 3, "WPA3": 4}
+                if order.get(new_enc, 0) < order.get(prev_enc, 0):
+                    self.rs.ap_encryption_downgrade(ap, prev_enc, new_enc)
         # SSIDs duplicados (posible evil-twin)
         seen_ssid, dups = set(), set()
         for a in found:
@@ -205,48 +239,77 @@ class Monitor:
             self.rs.ap_twin(s)
 
     # ------------------------------------------------------------------ loop
-    def run(self, deep_sv=False):
-        """Una vuelta completa (usado por el loop y por la API /scan)."""
-        self._cycle_lan(deep_sv)
-        self._cycle_wifi()
+    def run(self, deep_sv=False, do_lan=True, do_wifi=True):
+        """Una vuelta (LAN y/o WiFi). Usado por el loop y por la API /scan."""
+        if do_lan:
+            self._cycle_lan(deep_sv)
+        if do_wifi:
+            self._cycle_wifi()
         self._first = False
 
     def loop(self):
+        os.makedirs(os.path.dirname(PIDFILE), exist_ok=True)
         with open(PIDFILE, "w") as f:
             f.write(str(os.getpid()))
         LOGGER.info("monitor pid %s — LAN %ss, sv %ss, WiFi %ss",
                     os.getpid(), self.cfg.lan_interval, self.cfg.sv_interval,
                     self.cfg.wifi_interval)
-        nxt = {}
-        while True:
+        nxt = {"lan": 0.0, "wifi": 0.0}
+        while not self._stopped():
             t = time.time()
+            if self.manual_pause:
+                self._set_mode("paused")
+                time.sleep(1)
+                continue
             if not wifi_gate():
                 LOGGER.info("sin WiFi (supplicant inactive) — pausado")
+                self._set_mode("offline_wifi")
             else:
                 pause, eco, _pct = self._power_profile()
                 if pause:
-                    time.sleep(15)
+                    self._set_mode("paused")
+                    # sleep en trozos para respetar stop
+                    for _ in range(15):
+                        if self._stopped():
+                            break
+                        time.sleep(1)
                     continue
+                self._set_mode("eco" if eco else "running")
                 lan_iv = self.cfg.lan_interval * (2 if eco else 1)
+                wifi_iv = self.cfg.wifi_interval * (2 if eco else 1)
                 sv_iv = self.cfg.sv_interval * (2 if eco else 1)
+                did = False
                 if t >= nxt.get("lan", 0):
                     deep = (t >= self._next_sv)
                     if deep:
                         self._next_sv = t + sv_iv
                     try:
-                        self.run(deep_sv=deep)
+                        self.run(deep_sv=deep, do_lan=True, do_wifi=False)
                     except Exception as e:
-                        LOGGER.error("cycle err %r", e)
+                        LOGGER.error("lan cycle err %r", e)
                     nxt["lan"] = t + lan_iv
                     self._record_scores()
-                if t >= self._next_prune:
+                    did = True
+                if t >= nxt.get("wifi", 0):
+                    try:
+                        self.run(deep_sv=False, do_lan=False, do_wifi=True)
+                    except Exception as e:
+                        LOGGER.error("wifi cycle err %r", e)
+                    nxt["wifi"] = t + wifi_iv
+                    did = True
+                if did and t >= self._next_prune:
                     try:
                         removed = db.prune(self.con)
                         LOGGER.info("prune: %s", removed)
                     except Exception as e:
                         LOGGER.error("prune err %r", e)
                     self._next_prune = t + 86400
-            time.sleep(5)
+            for _ in range(5):
+                if self._stopped():
+                    break
+                time.sleep(1)
+        LOGGER.info("monitor loop fin")
+        self._set_mode("stopped")
 
 
 def stop():

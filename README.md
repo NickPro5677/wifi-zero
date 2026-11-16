@@ -1,86 +1,66 @@
 # WiFi-ZERO
 
 Vigilancia continua de **tu red local** desde **Android/Termux sin root**
-(probado en Redmi Note 11, Android 11) — v3.1.
+(probado en Redmi Note 11, Android 11) — **v4.0**.
 
 Rastrea dispositivos, redes, señales y cambios de seguridad en tu Wi‑Fi,
-almacena todo en SQLite (migrado) y publica un panel web local con **login**,
-**eventos en vivo** (SSE), análisis de riesgo y gráficos. Todo **100 % Python
-stdlib** (cero `pip install`).
+almacena todo en SQLite y publica un **panel PWA** con login, eventos en vivo
+(SSE), ajustes, control del monitor y gráficos. Todo **100 % Python stdlib**
+(cero `pip install`).
 
 > **Ámbito (imprescindible):** este proyecto es para **tu propia red** o con
 > autorización. En Android sin root **no existe** monitor mode, deauth ni
-> lectura del tráfico ajeno; hacemos exactamente lo permitido y útil para
-> proteger tu hogar. Ver `docs/ETHICS.md`.
+> lectura del tráfico ajeno. Ver `docs/ETHICS.md`.
 
 ---
 
 ## Qué aporta en una línea
-Sin root, con solo capacidades de usuario, wifi-zero te da: inventario de
-hosts (ARP vecino + fabricante OUI), puertos/servicios, análisis Wi‑Fi
-profundo (cifrado, canal, SSID oculto, BSSID duplicado), motor de reglas
-anti‑intrusión con cooldown, scoring de riesgo por host, whitelist/watchlist
-y un panel web seguro con token.
+Sin root, con solo capacidades de usuario: inventario de hosts (ARP + OUI),
+puertos/servicios, análisis Wi‑Fi, motor anti‑intrusión, scoring de riesgo,
+whitelist/watchlist y un **panel instalable** que sustituye la terminal en el
+día a día.
 
-## Rápido — arrancar
+## Rápido — arrancar (una vez)
 
 ```sh
 cd ~/wifi-zero
-python3 scripts/set_password.py     # define la contraseña del panel
-./start_all.sh                      # monitor + panel + portada
-./checks.sh                         # TODO OK = sano
+./start_all.sh          # supervisor: panel + monitor
+# Abre http://127.0.0.1:8788 → wizard /setup (primera vez)
+# Luego: Añadir a pantalla de inicio (PWA)
 ```
 
-Panel: `http://127.0.0.1:8788`  (usuario por defecto `admin`, la que fijes).
+La terminal solo hace falta para ese arranque (o Termux:Widget / boot).
+Contraseña, intervalos, pushes, start/stop, checks y backup: **desde el panel**.
 
-## Qué rastrea (v2)
+Legado (recuperación): `python3 scripts/set_password.py`, `./checks.sh`.
+
+## Panel (v4)
+
+- **First-run** `/setup`: usuario, contraseña, bind local vs LAN, arrancar monitor.
+- **Login** (scrypt, tokens HMAC, 30 min, throttling, CSRF).
+- **Resumen / Hosts / Radio / Topología / Eventos / Whitelist**.
+- **Ajustes**: intervalos (LAN y Wi‑Fi independientes), batería, puertos, pushes,
+  pesos de riesgo, silenciar reglas, cambio de password.
+- **Sistema**: start/pause/resume/restart/stop, checks JSON, backup, logs, instalar PWA.
+- **SSE** en vivo, export CSV (hosts y eventos), atajos `/` `s` `1–7` `Esc`.
+
+## Qué rastrea
 
 | Módulo | Técnica | Salida |
 |---|---|---|
-| Hosts | ARP del kernel (`ip neigh`) + TCP connect | IP, MAC, fabricante (OUI), estado, 1ª/última |
-| Servicios | probe TCP + `nmap -sV` (opcional, cadencia `sv`) | puerto, servicio, producto, versión |
-| Wi-Fi | Termux:API `scaninfo`/`connectioninfo` | cifrado (WPA2/WPA3/OPEN), canal, banda 2.4/5/6 GHz, bandwidth, SSID oculto, DFS |
-| Sospechosos | motor de reglas (cooldown c/entidad) | host nuevo, spoof MAC, MAC randomizada (LAA), conflicto de IP, offline, AP new/rogue/open, downgrade cifrado, evil-twin, **cambio de MAC del gateway (MITM)**, puerto nuevo |
-| Riesgo | scoring 0–100 + tier (host *y* AP) | hosts ordenados + **serie histórica de riesgo** por host |
-| Historia | `hosts_history`/`signals`/`scores` | uptime, señal y evolución de riesgo por host/AP |
-| Higiene | WAL + `prune()` por retención | la DB no crece sin límite (config `retention`) |
-
-## Panel (v3.1)
-
-- **Login** (scrypt, tokens HMAC, 30 min, throttling 5/10min, CSRF).
-- **Resumen**: KPIs, riesgo de red, enlace actual, hosts expuestos, feed vivo.
-- **Hosts** ordenables; clic abre un **drawer** (puertos, uptime, riesgo, whitelist).
-- **Radio**: heatmap de canales + APs (OPEN/WPA3/twin) y redes memorizadas.
-- **Topología**: nodos por riesgo + interfaces locales.
-- **Eventos SSE** reales (el servidor relee SQLite; el monitor es otro proceso).
-- Atajos: `/` buscar · `s` escanear · `1–5` vistas · `Esc` cierra drawer.
-- **Export** CSV (RFC 4180).
+| Hosts | ARP (`ip neigh`) + TCP | IP, MAC, OUI, estado, 1ª/última |
+| Servicios | TCP + `nmap -sV` opcional | puerto, servicio, versión |
+| Wi-Fi | Termux:API scaninfo/connectioninfo | cifrado, canal, banda, hidden, DFS |
+| Sospechosos | reglas + cooldown + mute | host nuevo, spoof, LAA, conflicto IP, offline, AP rogue/open/twin, downgrade, gateway MITM, puerto nuevo |
+| Riesgo | scoring 0–100 + historial | hosts/APs + serie `scores` |
 
 ## Configuración
 
-`config.json` (los valores por defecto bastan):
+Editable en el panel (Ajustes) o en `config.json`. Ejemplo: `config.example.json`.
 
-```json
-{
-  "intervalos": { "lan": 60, "wifi": 120, "sv": 300 },
-  "notify":     { "min_level": "warn", "channel": "wifi-zero" },
-  "panel":      { "port": 8788, "bind": "0.0.0.0", "auth": true, "user": "admin", "password": "<scrypt hash>" },
-  "battery":    { "eco_below": 35, "pause_below": 15 },
-  "scanner":    { "ports_scan": [...], "nse_broadcast": true, "service_versions": true },
-  "pushes":     { "enabled": false, "ntfy_url": "", "telegram_token": "", "telegram_chat": "" },
-  "watchlist":  [],
-  "retention":  { "signals": 7, "hosts_history": 14, "scores": 30, "stations": 7, "events": 30, "ports_closed": 7 },
-  "gateway_watch": true,
-  "threat":     { "weights": { "untrusted": 25, "unknown": 10, "no_vendor": 15, "random_mac": 15, "per_port": 6, "max_ports": 30, "weak_svc": 10, "danger_port": 15 } }
-}
-```
-
-- Cambia la contraseña: `python3 scripts/set_password.py`
-- Push en otro dispositivo (nfty/Telegram): completa `pushes` y pon `enabled: true`.
-- Watchlist: pon `{ "mac": "..", "label": "Router" }` para que su caída salte crítica.
-- Retención: ajusta `retention` (días); la purga corre sola cada 24 h en el monitor.
-- Modo eco: con batería < `eco_below` y desenchufado, el monitor duplica los
-  intervalos y omite `nmap -sV` hasta que vuelvas a cargar.
+- `intervalos.wifi` gobierna el ciclo Wi‑Fi (independiente del LAN).
+- `muted_rules`: `{ "new_host": <unix_ts\|-1> }` silencia reglas.
+- Retención, watchlist, threat weights, pushes: mismos campos que v3.
 
 ## Makefile
 
@@ -88,7 +68,7 @@ Panel: `http://127.0.0.1:8788`  (usuario por defecto `admin`, la que fijes).
 make test      # unit tests (sin red)
 make check     # healthcheck del stack
 make run/stop
-make report    # reporte Markdown
+make report
 make backup
 ```
 
@@ -96,23 +76,21 @@ make backup
 
 ```
 wifi-zero/
-├── core/        config · db(+migraciones) · log · auth · rules ·
-│                threat · notify · monitor · server · report
-├── scanner/      lan_scan (ip neigh + nmap) · wifi_track (API)
-├── panel/        index.html · host.html · login.html · app.js · style.css
-├── scripts/      set_password.py · watchdog.sh · backup.sh
-├── tests/        test_wifi_zero.py
-├── config.json · Makefile · checks.sh · start_all.sh · stop_all.sh
-├── data/         wifi.db (gitignored) · reports/ · backups/
-└── docs/         ARCHITECTURE · RULES · SECURITY · ETHICS
+├── core/        supervisor · config · db · monitor · server · rules · threat · …
+├── scanner/     lan_scan · wifi_track
+├── panel/       PWA (index, setup, login, app.js, sw.js, manifest)
+├── scripts/     set_password (legado) · watchdog · backup
+├── tests/
+├── docs/        ARCHITECTURE · RULES · SECURITY · ETHICS
+└── start_all.sh → python3 -m core
 ```
 
 ## Dev
 
-- prueba sin red: `python3 -m unittest discover tests`
-- nuevos módulos: mira `docs/ARCHITECTURE.md`, añade migraciones a `core/db.py`.
-- logs: `logs/wifi-zero.log` (rotación diaria), `logs/monitor.log`, `logs/server.log`.
+```sh
+python3 -m unittest discover tests
+python3 -m core --no-monitor   # solo panel
+```
 
 ---
-Más: `docs/ARCHITECTURE.md` (cómo encaja el spam), `docs/RULES.md` (reglas y
-cooldown), `docs/SECURITY.md` (panel/auth), `docs/ETHICS.md` (uso lícito).
+Más: `docs/ARCHITECTURE.md`, `docs/RULES.md`, `docs/SECURITY.md`, `docs/ETHICS.md`.

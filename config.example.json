@@ -43,6 +43,7 @@
     "ports_closed": 7
   },
   "gateway_watch": true,
+  "muted_rules": {},
   "threat": {
     "unknown_vendor_warn": true,
     "new_open_port": 15,

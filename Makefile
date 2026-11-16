@@ -1,4 +1,4 @@
-.PHONY: run test lint check stop backup
+.PHONY: run test lint check stop backup report
 
 run:
 	bash start_all.sh
