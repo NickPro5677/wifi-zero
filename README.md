@@ -22,15 +22,28 @@ día a día.
 
 ## Rápido — arrancar (una vez)
 
+Guía completa (paquetes Termux, permisos, boot, secreto de sesión):
+**[`docs/INSTALL.md`](docs/INSTALL.md)**.
+
 ```sh
+pkg install python nmap termux-api termux-services curl   # ver INSTALL.md
 cd ~/wifi-zero
+# persiste el secreto HMAC (si no, cada reboot invalida el login):
+mkdir -p ~/.wifi-zero
+python3 -c "import secrets; print(secrets.token_hex(32))" > ~/.wifi-zero/session_secret
+echo 'export WZ_SESSION_SECRET="$(cat ~/.wifi-zero/session_secret)"' >> ~/.bashrc
+export WZ_SESSION_SECRET="$(cat ~/.wifi-zero/session_secret)"
 ./start_all.sh          # supervisor: panel + monitor
 # Abre http://127.0.0.1:8788 → wizard /setup (primera vez)
 # Luego: Añadir a pantalla de inicio (PWA)
 ```
 
-La terminal solo hace falta para ese arranque (o Termux:Widget / boot).
-Contraseña, intervalos, pushes, start/stop, checks y backup: **desde el panel**.
+La terminal solo hace falta para ese arranque (o Termux:Widget / Termux:Boot —
+ver `docs/INSTALL.md`). Contraseña, intervalos, pushes, start/stop, checks y
+backup: **desde el panel**.
+
+Bind por defecto: `127.0.0.1` (Bearer no viaja por la LAN en claro). En `/setup`
+puedes elegir `0.0.0.0` solo en redes de confianza — ver `docs/SECURITY.md`.
 
 Legado (recuperación): `python3 scripts/set_password.py`, `./checks.sh`.
 
@@ -81,16 +94,19 @@ wifi-zero/
 ├── panel/       PWA (index, setup, login, app.js, sw.js, manifest)
 ├── scripts/     set_password (legado) · watchdog · backup
 ├── tests/
-├── docs/        ARCHITECTURE · RULES · SECURITY · ETHICS
+├── docs/        INSTALL · ARCHITECTURE · RULES · SECURITY · ETHICS
 └── start_all.sh → python3 -m core
 ```
 
 ## Dev
 
 ```sh
-python3 -m unittest discover tests
+python3 -m unittest discover -s tests -q
 python3 -m core --no-monitor   # solo panel
 ```
 
+CI usa el mismo `unittest` (sin `pip install`).
+
 ---
-Más: `docs/ARCHITECTURE.md`, `docs/RULES.md`, `docs/SECURITY.md`, `docs/ETHICS.md`.
+Más: `docs/INSTALL.md`, `docs/ARCHITECTURE.md`, `docs/RULES.md`,
+`docs/SECURITY.md`, `docs/ETHICS.md`.

@@ -1,5 +1,25 @@
 # Changelog
 
+## [4.0.1] - quick wins post-v4
+### Operación
+- `scripts/watchdog.sh` alinea con supervisor v4 (`python3 -m core`,
+  `logs/supervisor.pid`); backup diario vía API sqlite3.
+- `scripts/backup.sh` / `core.checks.make_backup`: snapshot WAL-safe
+  (`Connection.backup`, fallback `wal_checkpoint` + copy).
+- `checks.sh` comprueba `supervisor.pid` (ya no `monitor.pid` suelto).
+
+### Seguridad / defaults
+- `panel.bind` por defecto `127.0.0.1` (ejemplo + DEFAULTS); LAN `0.0.0.0`
+  solo si se elige en `/setup`. Docs advierten Bearer en claro sin TLS.
+- Fix tokens HMAC: el separador `.` dentro del blob coincidía con bytes del
+  MAC (~12 % de sesiones rechazadas al azar). Ahora separa con NUL.
+
+### Docs / CI
+- `docs/INSTALL.md`: `pkg install`, permisos, Termux:Boot/Widget,
+  persistir `WZ_SESSION_SECRET`.
+- CI = `python -m unittest discover` (sin pip/pytest).
+- Tests HTTP del control plane: setup, auth, CSRF, redact, `/api/control/*`.
+
 ## [4.0.0] - PWA como plano de control
 ### Arquitectura
 - Supervisor único (`python3 -m core` / `./start_all.sh`): posee panel HTTP y

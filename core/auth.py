@@ -46,8 +46,10 @@ _SESSION_TTL = 30 * 60  # 30 min
 
 
 def _b64sign(payload: bytes) -> str:
+    """Firma payload ASCII. Separador NUL: el MAC binario puede contener ``.``
+    (~12 % de digests), y un ``rsplit(b'.')`` rechazaba tokens válidos."""
     mac = hmac.new(_SESSION_SECRET.encode(), payload, hashlib.sha256).digest()
-    return base64.urlsafe_b64encode(payload + b"." + mac).decode()
+    return base64.urlsafe_b64encode(payload + b"\x00" + mac).decode()
 
 
 def create_token(username: str) -> str:
@@ -58,7 +60,7 @@ def create_token(username: str) -> str:
 def verify_token(token: str, username: str) -> bool:
     try:
         raw = base64.urlsafe_b64decode(token.encode())
-        body, mac = raw.rsplit(b".", 1)
+        body, mac = raw.split(b"\x00", 1)
         expected = hmac.new(_SESSION_SECRET.encode(), body, hashlib.sha256).digest()
         if not hmac.compare_digest(mac, expected):
             return False

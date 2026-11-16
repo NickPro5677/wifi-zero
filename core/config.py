@@ -16,7 +16,9 @@ CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 DEFAULTS = {
     "intervalos": {"lan": 60, "wifi": 120, "sv": 300},
     "notify": {"min_level": "warn", "channel": "wifi-zero"},
-    "panel": {"port": 8788, "bind": "0.0.0.0", "auth": True, "user": "admin", "password": ""},
+    # bind local por defecto: Bearer no viaja en claro por la LAN.
+    # En /setup se puede elegir 0.0.0.0 (toda la LAN) conscientemente.
+    "panel": {"port": 8788, "bind": "127.0.0.1", "auth": True, "user": "admin", "password": ""},
     "battery": {"eco_below": 35, "pause_below": 15},
     "scanner": {
         "ports_scan": [22, 53, 80, 123, 443, 445, 554, 1900, 5060, 5353, 8000, 8080, 8443, 8888, 9090, 49152],

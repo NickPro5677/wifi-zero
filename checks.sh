@@ -35,11 +35,11 @@ else
   echo "  [FAIL] panel web 8788 caído"; fail=1
 fi
 
-# monitor running
-if test -f logs/monitor.pid && kill -0 "$(cat logs/monitor.pid)" 2>/dev/null; then
-  echo "  [ok]   monitor corriendo"
+# supervisor (v4) running
+if test -f logs/supervisor.pid && kill -0 "$(cat logs/supervisor.pid)" 2>/dev/null; then
+  echo "  [ok]   supervisor corriendo"
 else
-  echo "  [FAIL] monitor caído"; fail=1
+  echo "  [FAIL] supervisor caído"; fail=1
 fi
 
 echo "== resultado: $([ $fail -eq 0 ] && echo TODO OK || echo 'hay fallos') =="
