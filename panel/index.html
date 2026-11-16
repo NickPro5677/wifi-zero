@@ -3,9 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#07090f">
+<meta name="theme-color" content="#0a0c10">
 <meta name="description" content="Consola de vigilancia wifi-zero">
 <title>wifi-zero · consola</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="stylesheet" href="/style.css">
@@ -13,7 +16,7 @@
 <body>
 <a class="skip-link" href="#main">Saltar al contenido</a>
 <div class="app">
-  <aside class="side glass" aria-label="Navegación principal">
+  <aside class="side" aria-label="Navegación principal">
     <div class="brand">
       <span class="pulse-dot" id="liveDot" aria-hidden="true"></span>
       <div>
@@ -40,7 +43,7 @@
   </aside>
 
   <main id="main">
-    <header class="topbar glass">
+    <header class="topbar">
       <label class="sr-only" for="q">Buscar</label>
       <input id="q" type="search" placeholder="Buscar IP, MAC, vendor…  /" autocomplete="off" aria-label="Buscar">
       <label class="tog"><input type="checkbox" id="onlyCrit"> Solo críticos</label>
@@ -53,32 +56,32 @@
 
     <section id="view-overview" class="view" aria-label="Resumen">
       <div class="cards" id="cards"></div>
-      <div class="glass panel" id="opsPanel">
+      <div class="panel" id="opsPanel">
         <h2>Estado operativo</h2>
         <div id="opsBox" class="ops-box">—</div>
       </div>
       <div class="grid2">
-        <div class="glass panel">
+        <div class="panel">
           <h2>Riesgo de la red</h2>
           <div id="riskOverview"></div>
         </div>
-        <div class="glass panel">
+        <div class="panel">
           <h2>Enlace actual</h2>
           <div id="stationBox" class="muted">sin estación</div>
         </div>
       </div>
-      <div class="glass panel">
+      <div class="panel">
         <h2>Hosts más expuestos</h2>
         <div id="hotHosts"></div>
       </div>
-      <div class="glass panel">
+      <div class="panel">
         <h2>Eventos recientes</h2>
         <ul class="ev-log" id="eventsMini" aria-live="polite"></ul>
       </div>
     </section>
 
     <section id="view-hosts" class="view hidden" aria-label="Hosts">
-      <div class="glass panel">
+      <div class="panel">
         <h2>Red · hosts y riesgo</h2>
         <div class="table-wrap">
           <table id="tHosts">
@@ -99,11 +102,11 @@
     </section>
 
     <section id="view-radio" class="view hidden" aria-label="Radio">
-      <div class="glass panel">
+      <div class="panel">
         <h2>Ocupación de canales</h2>
         <div id="heat" class="heat"></div>
       </div>
-      <div class="glass panel">
+      <div class="panel">
         <h2>APs visibles</h2>
         <div class="table-wrap">
           <table id="tAP">
@@ -115,7 +118,7 @@
           </table>
         </div>
       </div>
-      <div class="glass panel">
+      <div class="panel">
         <h2>Redes memorizadas</h2>
         <div class="table-wrap">
           <table id="tNets"><thead><tr><th scope="col">SSID</th><th scope="col">BSSID</th><th scope="col">veces</th></tr></thead><tbody></tbody></table>
@@ -124,7 +127,7 @@
     </section>
 
     <section id="view-topo" class="view hidden" aria-label="Topología">
-      <div class="glass panel">
+      <div class="panel">
         <h2>Interfaces y mapa</h2>
         <div id="topoIfs"></div>
         <div id="topoMap" class="topo"></div>
@@ -132,7 +135,7 @@
     </section>
 
     <section id="view-events" class="view hidden" aria-label="Eventos">
-      <div class="glass panel">
+      <div class="panel">
         <h2>Eventos en vivo</h2>
         <div class="filterbar">
           <button class="btn" type="button" id="btnExportEv">CSV eventos</button>
@@ -142,7 +145,7 @@
     </section>
 
     <section id="view-list" class="view hidden" aria-label="Lista blanca">
-      <div class="glass panel">
+      <div class="panel">
         <h2>Whitelist</h2>
         <form id="wlForm" class="filterbar">
           <label class="sr-only" for="wlMac">MAC</label>
@@ -163,7 +166,7 @@
     </section>
 
     <section id="view-settings" class="view hidden" aria-label="Ajustes">
-      <div class="glass panel">
+      <div class="panel">
         <h2>Intervalos y batería</h2>
         <form id="cfgForm" class="cfg-form">
           <label>LAN (s) <input type="number" id="cfgLan" min="10" max="3600"></label>
@@ -216,7 +219,7 @@
           </div>
         </form>
       </div>
-      <div class="glass panel">
+      <div class="panel">
         <h2>Cambiar contraseña</h2>
         <form id="pwForm" class="cfg-form">
           <label>Actual <input type="password" id="pwOld" autocomplete="current-password"></label>
@@ -228,7 +231,7 @@
     </section>
 
     <section id="view-system" class="view hidden" aria-label="Sistema">
-      <div class="glass panel">
+      <div class="panel">
         <h2>Control del monitor</h2>
         <div class="filterbar" role="group" aria-label="Control">
           <button class="btn primary" type="button" data-ctl="start">Arrancar</button>
@@ -241,15 +244,15 @@
         </div>
         <pre class="sys-out" id="sysStatus" aria-live="polite">—</pre>
       </div>
-      <div class="glass panel">
+      <div class="panel">
         <h2>Resultado checks</h2>
         <div id="checksBox" class="checks-box">Pulsa «Ejecutar checks»</div>
       </div>
-      <div class="glass panel">
+      <div class="panel">
         <h2>Logs recientes</h2>
         <pre class="sys-out tall" id="logsBox">—</pre>
       </div>
-      <div class="glass panel">
+      <div class="panel">
         <h2>Instalar PWA</h2>
         <p class="sub">Añade wifi-zero a la pantalla de inicio para usarlo sin la terminal.</p>
         <button class="btn primary" type="button" id="btnInstall" hidden>Instalar app</button>
@@ -259,7 +262,7 @@
   </main>
 </div>
 
-<aside class="drawer glass hidden" id="drawer" role="dialog" aria-modal="true" aria-labelledby="dTitle">
+<aside class="drawer hidden" id="drawer" role="dialog" aria-modal="true" aria-labelledby="dTitle">
   <header>
     <strong id="dTitle">Host</strong>
     <button class="btn ghost" type="button" id="dClose">Cerrar</button>
