@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Wi-Fi tracker — Termux:API pasiva (sin root, sin modo monitor).
+"""Wi-Fi tracker — escaneo cercano opcional (Termux:API).
 
-Lee solo lo que Android expone legalmente vía:
+En el modelo híbrido (Pi/PC + PWA) el monitoreo primario es ARP/LAN.
+El escaneo de redes cercanas vía Termux:API es **opcional/secundario**:
   - `termux-wifi-scaninfo`  → redes cercanas (SSID, BSSID, canal, RSSI, caps)
   - `termux-wifi-connectioninfo` → enlace actual del teléfono
 
-No captura handshakes, no deauth, no spoofing, no cracking. Los campos
-devueltos se limitan a la lista LEGAL_FIELDS (información de beacon/OS).
+En Linux sin Termux:API las llamadas fallan con error claro y no rompen
+el monitor LAN. No captura handshakes, no deauth, no spoofing, no cracking.
 """
 from __future__ import annotations
 
@@ -21,19 +22,29 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE_DIR, "core"))
 sys.path.insert(0, os.path.join(BASE_DIR, "scanner"))
 import db  # noqa: E402
+import runtime  # noqa: E402
 from lan_scan import mac_vendor  # noqa: E402
 
 log = logging.getLogger("wifi")
 
-_PREFIX = "/data/data/com.termux/files/usr/bin"
-SCANINFO = os.environ.get(
-    "WZ_WIFI_SCANINFO",
-    os.path.join(_PREFIX, "termux-wifi-scaninfo"),
-)
-CONNINFO = os.environ.get(
-    "WZ_WIFI_CONNINFO",
-    os.path.join(_PREFIX, "termux-wifi-connectioninfo"),
-)
+
+def _scaninfo_path():
+    return runtime.wifi_scaninfo_bin() or os.environ.get(
+        "WZ_WIFI_SCANINFO",
+        "/data/data/com.termux/files/usr/bin/termux-wifi-scaninfo",
+    )
+
+
+def _conninfo_path():
+    return runtime.wifi_conninfo_bin() or os.environ.get(
+        "WZ_WIFI_CONNINFO",
+        "/data/data/com.termux/files/usr/bin/termux-wifi-connectioninfo",
+    )
+
+
+# Compat para tests que parchean el atributo de módulo
+SCANINFO = _scaninfo_path()
+CONNINFO = _conninfo_path()
 
 # Campos legales / públicos reportados por el SO (beacon + ScanResult).
 # Nunca se almacenan ni exponen passwords, PMK, handshakes ni payloads.
@@ -57,15 +68,29 @@ LEGAL_FIELDS = (
 )
 
 SCAN_DISCLAIMER = (
-    "Escaneo pasivo vía Termux:API / Android Wi‑Fi scan. "
+    "Escaneo pasivo opcional vía Termux:API / Android Wi‑Fi scan. "
     "Solo campos reportados por el SO (SSID, BSSID, frecuencia/canal, "
-    "RSSI, capabilities/cifrado). Requiere Termux:API + permisos de "
-    "ubicación / Wi‑Fi cercanas. Sin modo monitor, deauth ni cracking."
+    "RSSI, capabilities/cifrado). En Pi/PC el inventario principal es "
+    "ARP/LAN; este escaneo es secundario. Sin modo monitor, deauth ni cracking."
 )
+
+
+def _missing_tool_error(exe):
+    """Mensaje claro según runtime: en Linux es opcional."""
+    name = os.path.basename(exe or "termux-wifi-scaninfo")
+    if runtime.is_linux_host():
+        return (
+            f"opcional no disponible: {name} "
+            "(escaneo cercano solo en Termux/Android; "
+            "en Pi/PC el monitoreo LAN no lo necesita)"
+        )
+    return f"no encontrado: {exe or name} (instala termux-api)"
 
 
 def _run(exe, timeout=15):
     """Ejecuta un binario Termux:API. Devuelve (data|None, error|None)."""
+    if not exe:
+        return None, _missing_tool_error(exe)
     try:
         out = subprocess.run(
             [exe], capture_output=True, text=True, timeout=timeout
@@ -79,7 +104,7 @@ def _run(exe, timeout=15):
             return None, "respuesta vacía (¿permisos de ubicación/Wi‑Fi?)"
         return json.loads(raw), None
     except FileNotFoundError:
-        return None, f"no encontrado: {exe} (instala termux-api)"
+        return None, _missing_tool_error(exe)
     except subprocess.TimeoutExpired:
         return None, f"timeout {timeout}s"
     except json.JSONDecodeError as e:
@@ -224,7 +249,7 @@ def _enrich_raw(a):
 
 def get_aps():
     """Lista de APs visibles con metadatos enriquecidos (legado monitor)."""
-    data, err = _run(SCANINFO)
+    data, err = _run(_scaninfo_path())
     if data is None:
         if err:
             log.debug("scaninfo: %s", err)
@@ -249,10 +274,11 @@ def scan_nearby(persist=False):
     """Escaneo bajo demanda de redes cercanas (solo campos legales).
 
     Returns dict:
-      ok, networks, count, scanned_at, error, disclaimer, source
+      ok, networks, count, scanned_at, error, disclaimer, source, optional
     """
     scanned_at = int(time.time())
-    data, err = _run(SCANINFO)
+    data, err = _run(_scaninfo_path())
+    optional = runtime.is_linux_host()
     if data is None:
         return {
             "ok": False,
@@ -262,6 +288,7 @@ def scan_nearby(persist=False):
             "error": err or "scan falló",
             "disclaimer": SCAN_DISCLAIMER,
             "source": "termux-wifi-scaninfo",
+            "optional": optional,
         }
     if not isinstance(data, list):
         return {
@@ -272,6 +299,7 @@ def scan_nearby(persist=False):
             "error": "formato inesperado (no es lista)",
             "disclaimer": SCAN_DISCLAIMER,
             "source": "termux-wifi-scaninfo",
+            "optional": optional,
         }
     networks = []
     seen = set()
@@ -319,12 +347,13 @@ def scan_nearby(persist=False):
         "error": None,
         "disclaimer": SCAN_DISCLAIMER,
         "source": "termux-wifi-scaninfo",
+        "optional": optional,
     }
 
 
 def get_link():
     """Estado de la conexión actual (con qué AP estamos)."""
-    d, err = _run(CONNINFO)
+    d, err = _run(_conninfo_path())
     if not d or not isinstance(d, dict) or not d.get("bssid"):
         if err:
             log.debug("conninfo: %s", err)
@@ -345,11 +374,58 @@ def get_link():
     }
 
 
+def _linux_lan_status(checked_at, *, missing_err=None):
+    """Fallback UX en Pi/PC cuando no hay Termux connectioninfo."""
+    iface = None
+    try:
+        from lan_scan import resolve_iface
+        iface = resolve_iface()
+    except Exception:
+        pass
+    if iface:
+        hint = (
+            "Host Linux/Pi: monitoreo ARP/LAN activo. "
+            "Escaneo Wi‑Fi cercano opcional (Termux) no instalado."
+        )
+        if missing_err:
+            hint = _hint_for_error(missing_err) or hint
+        return {
+            "ok": True,
+            "connected": True,
+            "state": "LAN_HOST",
+            "checked_at": checked_at,
+            "error": None,
+            "link": {
+                "ip": iface.get("ip"),
+                "state": "LAN_HOST",
+                "connected": True,
+                "source": "linux",
+            },
+            "quality": None,
+            "hint": hint,
+            "optional_scan": True,
+        }
+    return {
+        "ok": False,
+        "connected": False,
+        "state": "NO_IFACE",
+        "checked_at": checked_at,
+        "error": missing_err or "sin interfaz LAN con IP privada",
+        "link": None,
+        "quality": None,
+        "hint": "Conecta eth0/wlan0 a tu red o revisa `ip -br addr`.",
+        "optional_scan": True,
+    }
+
+
 def connection_status():
     """Estado de enlace enriquecido para panel/API (UX de conexión)."""
     checked_at = int(time.time())
-    d, err = _run(CONNINFO)
+    # Intentar Termux:API primero (tests / teléfono). Si falta en Linux → LAN.
+    d, err = _run(_conninfo_path())
     if d is None:
+        if runtime.is_linux_host():
+            return _linux_lan_status(checked_at, missing_err=err)
         return {
             "ok": False,
             "connected": False,
@@ -359,6 +435,7 @@ def connection_status():
             "link": None,
             "quality": None,
             "hint": _hint_for_error(err),
+            "optional_scan": False,
         }
     if not isinstance(d, dict) or not d.get("bssid"):
         return {
@@ -425,7 +502,18 @@ def _hint_for_error(err):
     if not err:
         return None
     e = err.lower()
+    if "opcional no disponible" in e or ("linux" in e and "opcional" in e):
+        return (
+            "En Pi/PC el escaneo cercano es opcional. "
+            "El inventario de hosts usa ARP/LAN. "
+            "Si aún corres en el teléfono: Termux:API + permisos."
+        )
     if "no encontrado" in e or "termux-api" in e:
+        if runtime.is_linux_host():
+            return (
+                "Herramienta Termux no presente en este host Linux — "
+                "normal; el monitoreo LAN sigue activo."
+            )
         return "Instala Termux:API (`pkg install termux-api`) y la app Termux:API."
     if "permiso" in e or "vacía" in e or "empty" in e:
         return "Concede ubicación y Wi‑Fi cercanas a Termux:API (Android 6+/13+)."

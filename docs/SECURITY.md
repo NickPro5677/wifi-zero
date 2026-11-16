@@ -4,25 +4,26 @@
 
 **Sí (permiso usuario normal, solo tu red):**
 - Escaneo ARP de tu propia subred y TCP-connect a servicios de tu red.
-- Lectura de la API Wi-Fi de Android (redes que tu teléfono alcanza).
+- Lectura opcional de la API Wi-Fi de Android (Termux) si aún corres ahí.
 - Historial local de hosts/eventos en SQLite.
 - Control del monitor y de la config desde el panel autenticado.
 
 **No (imposible sin root y sin autorización):**
-- Monitor mode, deauth, captura de paquetes de terceros, sniffing.
+- Monitor mode, deauth, captura de paquetes de terceros, sniffing, cracking.
 
 Usa esto **solo en redes de tu propiedad o con autorización** escrita.
 
 ## Modelo de amenazas del panel (v4)
 
-- Arranque: `python3 -m core` / `./start_all.sh`. First-run en `/setup` obliga a crear contraseña.
+- Arranque: `python3 -m core` / `./start_all.sh` / systemd.
+- First-run en `/setup` obliga a crear contraseña.
 - `panel.auth = true` + password scrypt.
-- **Bind por defecto: `127.0.0.1`** (solo el teléfono). El wizard `/setup` permite elegir `0.0.0.0` (toda la LAN) de forma explícita.
+- **Bind por defecto: `127.0.0.1`**. En Pi + PWA el wizard recomienda
+  `0.0.0.0` (LAN) de forma explícita.
 - Tokens HMAC-SHA256, TTL 30 min; CSRF Origin/Referer; login throttling 5/10 min.
 - `GET /api/config` **no** devuelve el hash ni el token de Telegram (redactados).
-- Mutaciones (`/api/config`, `/api/password`, `/api/control/*`, `/api/backup`) requieren Bearer.
+- Mutaciones requieren Bearer.
 - `POST /api/scan` desde localhost sin token (compat bootstrap).
-- CSV de export: no servir fuera de la LAN.
 
 ## Bind LAN y Bearer en claro
 
@@ -30,15 +31,18 @@ El panel habla **HTTP sin TLS**. Si `panel.bind = "0.0.0.0"`, cualquier host de
 la Wi‑Fi puede ver el tráfico (incluido `Authorization: Bearer …`) con un
 sniffer en la misma red.
 
-Recomendación:
+Recomendación (híbrido Pi + teléfono):
 
-1. Deja **`127.0.0.1`** (default) y usa la PWA en el mismo dispositivo.
-2. Si necesitas otro equipo en casa: preferible un túnel/reverse proxy con TLS
-   (p. ej. `ssh -L` o Caddy/nginx delante) en lugar de abrir `0.0.0.0` a pelo.
-3. Nunca expongas el puerto a Internet ni a Wi‑Fi de invitados/pública.
+1. Usa **`0.0.0.0` solo en LAN de confianza** (casa), nunca en Wi‑Fi de invitados
+   ni pública.
+2. Preferible un túnel/reverse proxy con TLS (`ssh -L`, Caddy/nginx) si la red
+   no es de confianza absoluta.
+3. Nunca expongas el puerto a Internet.
+4. En Termux (legado), `127.0.0.1` sigue siendo lo más seguro si el panel solo
+   se usa en el mismo dispositivo.
 
-No hay TLS embebido en el proceso (stdlib + Termux: mantenemos el superficie
-mínima). Documentamos el riesgo en lugar de fingir HTTPS incompleto.
+No hay TLS embebido en el proceso (stdlib: superficie mínima). Documentamos el
+riesgo en lugar de fingir HTTPS incompleto.
 
 ## Sesiones y `WZ_SESSION_SECRET`
 
@@ -47,18 +51,19 @@ arrancar → **cada reinicio invalida tokens**. Persiste el secreto:
 
 ```sh
 export WZ_SESSION_SECRET="$(cat ~/.wifi-zero/session_secret)"
+# o en systemd: ver deploy/wifi-zero.service
 ```
 
-Detalle completo: `docs/INSTALL.md` (§ boot / Widget).
+Detalle: `docs/INSTALL.md`.
 
 ## Datos en reposo
 
 - `data/wifi.db` — historial. Backup WAL-safe desde el panel (Sistema) o
-  `POST /api/backup` / `make backup` (API sqlite3, no `cp` a ciegas).
+  `POST /api/backup` / `make backup`.
 - Si importa la privacidad: cifra `data/` o bórralo al salir de casa.
 
 ## Recomendaciones
 
 - WPA2/WPA3 en tu red; OPEN = alerta.
 - Whitelist de fijos; watchlist de router/NAS.
-- Instala la PWA; evita operar desde redes públicas con bind `0.0.0.0`.
+- Instala la PWA en el teléfono; evita redes públicas con bind `0.0.0.0`.

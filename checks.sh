@@ -1,19 +1,57 @@
-#!/data/data/com.termux/files/usr/bin/sh
+#!/usr/bin/env sh
 # wifi-zero healthcheck (legado CLI — preferible: panel → Sistema → checks
-# o POST /api/checks)
+# o POST /api/checks). Portable: Linux/Pi y Termux.
 set -u
 cd "$(dirname "$0")"
 fail=0
 ck() { # name, ok/message
   if [ "${2:-}" = "ok" ]; then echo "  [ok]   $1"; else echo "  [FAIL] $1 — ${3:-sin detalles}"; fail=1; fi
 }
+cko() { # optional check — never fails the run
+  if [ "${2:-}" = "ok" ]; then echo "  [ok]   $1"; else echo "  [skip] $1 — ${3:-opcional}"; fi
+}
 
 echo "== wifi-zero checks =="
 
-ck "interfaz wlan0" "$(/system/bin/ip -brief addr show wlan0 2>/dev/null | grep -q '192\.168\.' && echo ok || echo no)"
-ck "ip (system)" "$(test -x /system/bin/ip && echo ok || echo no)"
-ck "nmap OUI db" "$(test -f /data/data/com.termux/files/usr/share/nmap/nmap-mac-prefixes && echo ok || echo no)"
-ck "termux-wifi-scaninfo" "$(test -x /data/data/com.termux/files/usr/bin/termux-wifi-scaninfo && echo ok || echo no)"
+# iproute2
+IP_BIN="$(command -v ip 2>/dev/null || true)"
+[ -z "$IP_BIN" ] && [ -x /system/bin/ip ] && IP_BIN=/system/bin/ip
+if [ -n "$IP_BIN" ]; then
+  ck "ip (iproute2)" ok
+  if "$IP_BIN" -brief addr 2>/dev/null | grep -Eq '192\.168\.|10\.|172\.'; then
+    ck "interfaz LAN" ok
+  else
+    ck "interfaz LAN" no "sin IPv4 privada"
+  fi
+else
+  ck "ip (iproute2)" no "no encontrado"
+  ck "interfaz LAN" no "sin ip"
+fi
+
+# OUI (nmap) — Termux o Debian
+OUI=""
+for p in \
+  /usr/share/nmap/nmap-mac-prefixes \
+  /usr/local/share/nmap/nmap-mac-prefixes \
+  /data/data/com.termux/files/usr/share/nmap/nmap-mac-prefixes
+do
+  [ -f "$p" ] && OUI="$p" && break
+done
+if [ -n "$OUI" ]; then ck "nmap OUI db" ok; else ck "nmap OUI db" no "instala nmap"; fi
+
+# Termux:API — opcional en Linux/Pi
+SCAN=""
+for p in \
+  "$(command -v termux-wifi-scaninfo 2>/dev/null || true)" \
+  /data/data/com.termux/files/usr/bin/termux-wifi-scaninfo
+do
+  [ -n "$p" ] && [ -x "$p" ] && SCAN="$p" && break
+done
+if [ -n "$SCAN" ]; then
+  cko "termux-wifi-scaninfo (opcional)" ok
+else
+  cko "termux-wifi-scaninfo (opcional)" no "normal en Pi/PC — LAN no lo necesita"
+fi
 
 # python modules
 python3 - <<'PY' >/dev/null 2>&1 && echo "  [ok]   python + sqlite3" || { echo "  [FAIL] python3/sqlite3"; fail=1; }

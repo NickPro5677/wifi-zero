@@ -37,13 +37,17 @@ LOGGER = log_get("monitor")
 
 PIDFILE = os.path.join(BASE_DIR, "logs", "monitor.pid")
 
-BATTERY_BIN = "/data/data/com.termux/files/usr/bin/termux-battery-status"
-
-
 def battery_state():
-    """(loaded, pct); ante cualquier fallo supone sano."""
+    """(loaded, pct); ante cualquier fallo supone sano.
+
+    En Linux/Pi no hay termux-battery-status → siempre (True, 100) = sin eco/pausa.
+    """
     try:
-        out = subprocess.run([BATTERY_BIN], capture_output=True, text=True, timeout=4)
+        import runtime
+        bat = runtime.battery_bin()
+        if not bat:
+            return True, 100
+        out = subprocess.run([bat], capture_output=True, text=True, timeout=4)
         if out.returncode == 0 and out.stdout.strip():
             d = json.loads(out.stdout)
             return d.get("status") == "CHARGING", d.get("percentage", 100)
@@ -52,20 +56,48 @@ def battery_state():
     return True, 100
 
 
+# Compat tests / legado
+BATTERY_BIN = "/data/data/com.termux/files/usr/bin/termux-battery-status"
+
+
 def battery_flush():
     """alias → battery_state() (parte del loop y de tests)."""
     return battery_state()
 
 
 def wifi_gate():
-    """True si el teléfono está asociado (supplicant COMPLETED)."""
-    st = wifi_track.get_link()
-    return bool(st and st.get("connected"))
+    """True si hay enlace Wi‑Fi (Termux) o LAN usable (Linux/Pi)."""
+    connected, _ = wifi_link_snapshot()
+    return connected
 
 
 def wifi_link_snapshot():
-    """(connected: bool, link: dict|None) — una sola lectura de connectioninfo."""
+    """(connected: bool, link: dict|None).
+
+    En Termux: connectioninfo (supplicant COMPLETED).
+    En Linux/Pi: no se bloquea el monitor por falta de Termux:API — basta
+    con una interfaz LAN con IP privada (ARP es el camino primario).
+    """
     st = wifi_track.get_link()
+    if st and st.get("connected"):
+        return True, st
+    try:
+        import runtime
+        if runtime.is_linux_host():
+            iface = lan_scan.resolve_iface()
+            if iface:
+                link = {
+                    "connected": True,
+                    "state": "LAN_HOST",
+                    "ip": iface.get("ip"),
+                    "iface": iface.get("name"),
+                    "source": "linux",
+                }
+                return True, link
+            # sin iface: seguir offline (backoff) hasta que haya red
+            return False, st
+    except Exception:
+        pass
     return bool(st and st.get("connected")), st
 
 
@@ -325,10 +357,22 @@ class Monitor:
                         self._record_scores()
                         did = True
                     if t >= nxt.get("wifi", 0):
+                        # En Pi/PC sin Termux:API el escaneo cercano es opcional:
+                        # no spamear errores ni ciclos vacíos.
+                        skip_wifi = False
                         try:
-                            self.run(deep_sv=False, do_lan=False, do_wifi=True)
-                        except Exception as e:
-                            LOGGER.error("wifi cycle err %r", e)
+                            import runtime
+                            skip_wifi = (
+                                runtime.is_linux_host()
+                                and not runtime.wifi_scan_available()
+                            )
+                        except Exception:
+                            skip_wifi = False
+                        if not skip_wifi:
+                            try:
+                                self.run(deep_sv=False, do_lan=False, do_wifi=True)
+                            except Exception as e:
+                                LOGGER.error("wifi cycle err %r", e)
                         nxt["wifi"] = t + wifi_iv
                         did = True
                     if did and t >= self._next_prune:

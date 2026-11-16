@@ -116,7 +116,11 @@ class TestScanNearbyMock(unittest.TestCase):
             out = wifi_track.scan_nearby()
         self.assertFalse(out["ok"])
         self.assertEqual(out["count"], 0)
-        self.assertIn("termux-api", out["error"].lower())
+        err = (out["error"] or "").lower()
+        self.assertTrue(
+            "termux" in err or "opcional" in err or "no encontrado" in err,
+            msg=err,
+        )
 
     def test_scan_empty_response(self):
         with mock.patch("wifi_track.subprocess.run") as run:

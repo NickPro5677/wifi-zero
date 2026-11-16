@@ -16,8 +16,8 @@ CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 DEFAULTS = {
     "intervalos": {"lan": 60, "wifi": 120, "sv": 300},
     "notify": {"min_level": "warn", "channel": "wifi-zero"},
-    # bind local por defecto: Bearer no viaja en claro por la LAN.
-    # En /setup se puede elegir 0.0.0.0 (toda la LAN) conscientemente.
+    # bind local por defecto (seguro). En Pi/PC + PWA el wizard recomienda
+    # 0.0.0.0 para abrir el panel desde el teléfono en la LAN de confianza.
     "panel": {"port": 8788, "bind": "127.0.0.1", "auth": True, "user": "admin", "password": ""},
     "battery": {"eco_below": 35, "pause_below": 15},
     "scanner": {

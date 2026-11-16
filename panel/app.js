@@ -229,7 +229,7 @@ function renderNearby() {
       <td>${encb}</td>
       <td class="vendor">${esc(a.vendor) || "?"}</td>
     </tr>`;
-  }).join("") || '<tr><td colspan="7" class="muted">Pulsa «Escanear cercanas» (Termux:API)</td></tr>';
+  }).join("") || '<tr><td colspan="7" class="muted">Opcional: «Escanear cercanas» (Termux:API). En Pi el monitoreo es ARP/LAN.</td></tr>';
 }
 
 async function scanNearby() {
@@ -243,14 +243,21 @@ async function scanNearby() {
         ? `${d.count} redes · ${fmtWhen(d.scanned_at)}`
         : (d.error || "falló");
     }
-    if (!d.ok) toast(d.error || "Escaneo Wi‑Fi falló", "warn");
-    else toast(`${d.count} redes cercanas`, "info");
+    if (!d.ok) {
+      const soft = d.optional || /opcional/i.test(d.error || "");
+      toast(
+        soft
+          ? (d.error || "Escaneo cercano opcional no disponible en este host")
+          : (d.error || "Escaneo Wi‑Fi falló"),
+        soft ? "info" : "warn",
+      );
+    } else toast(`${d.count} redes cercanas`, "info");
     renderNearby();
     // refrescar historial tras persist
     refresh();
   } catch (e) {
     if (msg) msg.textContent = "error";
-    toast("No se pudo escanear (¿Termux:API + permisos?)", "warn");
+    toast("Escaneo cercano no disponible (opcional en Pi/PC)", "info");
   }
 }
 

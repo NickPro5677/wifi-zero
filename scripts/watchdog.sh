@@ -1,10 +1,15 @@
-#!/data/data/com.termux/files/usr/bin/sh
+#!/usr/bin/env sh
 # wifi-zero watchdog v4: reinicia el supervisor único si se cae.
-# Lánzalo periódicamente (Termux:Boot, Widget, termux-job-scheduler).
+# Preferible en Pi: systemd (deploy/wifi-zero.service).
+# En Termux (legado): Termux:Boot / Widget / termux-job-scheduler.
 # NO arranca monitor+server por separado — usa `python3 -m core`.
 set -u
 cd "$(dirname "$0")/.."
 mkdir -p logs data
+if [ -z "${WZ_SESSION_SECRET:-}" ] && [ -f "$HOME/.wifi-zero/session_secret" ]; then
+  WZ_SESSION_SECRET="$(cat "$HOME/.wifi-zero/session_secret")"
+  export WZ_SESSION_SECRET
+fi
 
 need_restart() { # $1 = pidfile
   if [ -f "$1" ] && kill -0 "$(cat "$1" 2>/dev/null)" 2>/dev/null; then
