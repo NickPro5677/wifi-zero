@@ -52,6 +52,8 @@ Legado (recuperación): `python3 scripts/set_password.py`, `./checks.sh`.
 - **First-run** `/setup`: usuario, contraseña, bind local vs LAN, arrancar monitor.
 - **Login** (scrypt, tokens HMAC, 30 min, throttling, CSRF).
 - **Resumen / Hosts / Radio / Topología / Eventos / Whitelist**.
+- **Radio**: escaneo pasivo de redes cercanas (`/api/wifi/scan`) + estado de enlace
+  (`/api/wifi/link`). Solo campos legales del SO; ver `docs/ETHICS.md`.
 - **Ajustes**: intervalos (LAN y Wi‑Fi independientes), batería, puertos, pushes,
   pesos de riesgo, silenciar reglas, cambio de password.
 - **Sistema**: start/pause/resume/restart/stop, checks JSON, backup, logs, instalar PWA.
@@ -63,7 +65,7 @@ Legado (recuperación): `python3 scripts/set_password.py`, `./checks.sh`.
 |---|---|---|
 | Hosts | ARP (`ip neigh`) + TCP | IP, MAC, OUI, estado, 1ª/última |
 | Servicios | TCP + `nmap -sV` opcional | puerto, servicio, versión |
-| Wi-Fi | Termux:API scaninfo/connectioninfo | cifrado, canal, banda, hidden, DFS |
+| Wi-Fi | Termux:API scaninfo/connectioninfo (pasivo) | SSID, BSSID, cifrado, canal, banda, RSSI, hidden, DFS |
 | Sospechosos | reglas + cooldown + mute | host nuevo, spoof, LAA, conflicto IP, offline, AP rogue/open/twin, downgrade, gateway MITM, puerto nuevo |
 | Riesgo | scoring 0–100 + historial | hosts/APs + serie `scores` |
 

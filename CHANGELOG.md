@@ -1,5 +1,20 @@
 # Changelog
 
+## [4.1.0] - escaneo cercanas + enlace
+### Wi‑Fi (legal / pasivo)
+- `GET/POST /api/wifi/scan` — redes cercanas vía `termux-wifi-scaninfo`
+  (solo SSID, BSSID, canal/freq, RSSI, cifrado/capabilities, timestamp).
+- `GET /api/wifi/link` — estado de enlace (`connectioninfo`) + calidad RSSI.
+- Panel Radio: botón **Escanear cercanas**, tabla en vivo y estado de enlace.
+- Docs (`ETHICS`, `INSTALL`, `ARCHITECTURE`): pasivo/OS-only + permisos.
+
+### Conexión
+- Monitor: backoff exponencial si no hay Wi‑Fi (5→60s) y escaneo inmediato
+  al recuperar el enlace; snapshot de conexión en status del supervisor.
+
+### Tests
+- `tests/test_wifi_scan.py` con mock de Termux:API.
+
 ## [4.0.1] - quick wins post-v4
 ### Operación
 - `scripts/watchdog.sh` alinea con supervisor v4 (`python3 -m core`,

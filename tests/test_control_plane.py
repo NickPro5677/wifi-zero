@@ -266,6 +266,49 @@ class TestRedactAndControl(unittest.TestCase):
         self.assertIn("setup_needed", body)
         self.assertFalse(body["setup_needed"])
 
+    def test_wifi_scan_and_link_api(self):
+        sample = [{
+            "bssid": "aa:bb:cc:01:02:03",
+            "ssid": "TestNet",
+            "frequency_mhz": 2412,
+            "rssi": -55,
+            "capabilities": "[WPA2-PSK-CCMP][ESS]",
+        }]
+        conn = {
+            "bssid": "aa:bb:cc:01:02:03",
+            "ssid": "TestNet",
+            "ip": "10.0.0.5",
+            "rssi": -55,
+            "supplicant_state": "COMPLETED",
+            "frequency_mhz": 2412,
+            "link_speed_mbps": 72,
+        }
+
+        class _P:
+            def __init__(self, out, rc=0):
+                self.stdout, self.returncode, self.stderr = out, rc, ""
+
+        def fake_run(cmd, **kw):
+            exe = cmd[0] if cmd else ""
+            if "scaninfo" in exe:
+                return _P(json.dumps(sample))
+            if "connectioninfo" in exe:
+                return _P(json.dumps(conn))
+            return _P("", 1)
+
+        with mock.patch("wifi_track.subprocess.run", side_effect=fake_run):
+            code, body = _http("GET", self.h.url("/api/wifi/scan"), headers=self.auth)
+            self.assertEqual(code, 200, body)
+            self.assertTrue(body.get("ok"))
+            self.assertEqual(body.get("count"), 1)
+            self.assertEqual(body["networks"][0]["ssid"], "TestNet")
+            self.assertIn("disclaimer", body)
+            code2, link = _http("GET", self.h.url("/api/wifi/link"), headers=self.auth)
+            self.assertEqual(code2, 200, link)
+            self.assertTrue(link.get("ok"))
+            self.assertTrue(link["live"]["connected"])
+            self.assertEqual(link["live"]["link"]["ssid"], "TestNet")
+
     def test_control_start_and_status(self):
         with mock.patch("monitor.Monitor") as Mon:
             inst = mock.MagicMock()

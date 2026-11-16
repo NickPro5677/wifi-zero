@@ -34,7 +34,10 @@ lan_scan / wifi_track │
 - `core/checks.py` — healthchecks y backup (API).
 - `core/auth.py` — scrypt + tokens HMAC.
 - `scanner/lan_scan.py` / `wifi_track.py` — adquisición sin root.
-- `panel/` — SPA/PWA (setup, ajustes, sistema, a11y).
+  Wi‑Fi: solo Termux:API (`scaninfo`/`connectioninfo`); campos legales;
+  `scan_nearby()` + backoff de reconexión en el monitor.
+- `panel/` — SPA/PWA (setup, ajustes, sistema, radio/cercanas, a11y).
+- API Wi‑Fi: `GET/POST /api/wifi/scan`, `GET /api/wifi/link`.
 
 ## Ciclo de vida
 

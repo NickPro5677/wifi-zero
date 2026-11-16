@@ -18,6 +18,8 @@ const state = {
   stats: {},
   health: {},
   stations: [],
+  nearby: [],
+  link: null,
   config: null,
   onlyCrit: false,
   evCrit: false,
@@ -99,6 +101,7 @@ function setView(name) {
   if (ann) ann.textContent = "Vista: " + name;
   if (name === "settings") loadConfigForm();
   if (name === "system") refreshSystem();
+  if (name === "radio") refreshLink();
 }
 
 function applyHostFilter(list) {
@@ -132,12 +135,16 @@ function renderOps() {
     mode === "eco" ? "b-warn" :
     mode === "paused" || mode === "offline_wifi" ? "b-warn" :
     mode === "error" ? "b-crit" : "b-offline";
+  const conn = h.connection || {};
+  const backoff = conn.wifi_backoff_s || 0;
+  const streak = conn.wifi_fail_streak || 0;
   $("#opsBox").innerHTML = `
     <span class="badge ${badge}">${esc(mode)}</span>
     <span class="pill">monitor ${h.monitor_running ? "ON" : "OFF"}</span>
     <span class="pill">bat ${h.battery_pct != null ? h.battery_pct + "%" : "?"} ${h.charging ? "cargando" : ""}</span>
     <span class="pill">último ${fmtWhen(h.last_run)}</span>
-    <span class="pill">app ${esc(h.app_version || "4.0")}</span>`;
+    <span class="pill">app ${esc(h.app_version || "4.1")}</span>
+    ${mode === "offline_wifi" && backoff ? `<span class="pill">reintento ${backoff}s (#${streak})</span>` : ""}`;
 }
 
 function renderRisk() {
@@ -157,12 +164,105 @@ function renderRisk() {
 }
 
 function renderStation() {
-  const st = (state.stations || []).slice(-1)[0] || state.health.station;
+  const live = (state.link && state.link.live && state.link.live.link) || null;
+  const monLink = (state.health.connection && state.health.connection.link) || null;
+  const st = live || monLink || (state.stations || []).slice(-1)[0] || state.health.station;
   if (!st) { $("#stationBox").innerHTML = '<span class="muted">sin estación</span>'; return; }
+  const connected = st.connected !== false && (st.state === "COMPLETED" || st.connected === true || st.ip);
+  const q = st.quality || "";
   $("#stationBox").innerHTML = `
-    <div><strong>${esc(st.ssid) || "—"}</strong></div>
+    <div><strong>${esc(st.ssid) || "—"}</strong>
+      ${connected ? '<span class="badge b-online">conectado</span>' : '<span class="badge b-warn">' + esc(st.state || "offline") + '</span>'}
+      ${q ? `<span class="pill">${esc(q)}</span>` : ""}
+    </div>
     <div class="mac">${esc(st.bssid || "")}</div>
-    <div class="sub">${st.rssi ?? "—"} dBm · ${st.link_speed_mbps ?? "—"} Mbps · ${esc(st.ip || "")}</div>`;
+    <div class="sub">${st.rssi ?? "—"} dBm · ${st.link_speed_mbps ?? "—"} Mbps · ${esc(st.ip || "")}
+      ${st.channel != null ? " · ch " + st.channel : ""}
+      ${st.band ? " · " + esc(st.band) : ""}
+    </div>`;
+}
+
+function renderLinkBox() {
+  const box = $("#linkBox");
+  const hint = $("#linkHint");
+  if (!box) return;
+  const live = state.link && state.link.live;
+  const mon = state.link && state.link.monitor;
+  const conn = state.health.connection;
+  if (!live && !mon && !conn) {
+    box.innerHTML = '<span class="muted">sin datos de enlace — abre Radio o espera al monitor</span>';
+    if (hint) hint.textContent = "";
+    return;
+  }
+  const L = (live && live.link) || (mon && mon.link) || (conn && conn.link) || null;
+  const connected = live ? live.connected : (mon ? mon.connected : !!(L && L.connected));
+  const stateName = (live && live.state) || (L && L.state) || (conn && conn.mode) || "?";
+  const quality = (live && live.quality) || (L && L.quality) || "";
+  const backoff = (mon && mon.wifi_backoff_s) || (conn && conn.wifi_backoff_s) || 0;
+  box.innerHTML = `
+    <span class="badge ${connected ? "b-online" : "b-warn"}">${connected ? "asociado" : esc(stateName)}</span>
+    ${L ? `<span class="pill">${esc(L.ssid || "—")}</span>` : ""}
+    ${L && L.rssi != null ? `<span class="pill">${L.rssi} dBm</span>` : ""}
+    ${quality ? `<span class="pill">${esc(quality)}</span>` : ""}
+    ${L && L.ip ? `<span class="pill">${esc(L.ip)}</span>` : ""}
+    ${backoff ? `<span class="pill">backoff ${backoff}s</span>` : ""}`;
+  if (hint) hint.textContent = (live && live.hint) || "";
+}
+
+function renderNearby() {
+  const tb = $("#tNearby tbody");
+  if (!tb) return;
+  const q = state.q.toLowerCase();
+  const list = (state.nearby || []).filter((a) =>
+    !q || [a.ssid, a.bssid, a.vendor, a.encryption].join(" ").toLowerCase().includes(q));
+  tb.innerHTML = list.map((a) => {
+    const enc = a.encryption || "?";
+    const encb = enc === "OPEN" ? '<span class="badge b-crit">OPEN</span>'
+      : enc === "WPA3" ? '<span class="badge b-online">WPA3</span>'
+      : `<span class="badge b-warn">${esc(enc)}</span>`;
+    return `<tr>
+      <td>${esc(a.ssid) || "&lt;oculto&gt;"}</td>
+      <td class="mac">${esc(a.bssid)}</td>
+      <td>${a.channel ?? "—"}</td>
+      <td>${esc(a.band) || bandOf(a)}</td>
+      <td>${a.rssi ?? "—"}</td>
+      <td>${encb}</td>
+      <td class="vendor">${esc(a.vendor) || "?"}</td>
+    </tr>`;
+  }).join("") || '<tr><td colspan="7" class="muted">Pulsa «Escanear cercanas» (Termux:API)</td></tr>';
+}
+
+async function scanNearby() {
+  const msg = $("#wifiScanMsg");
+  if (msg) msg.textContent = "escaneando…";
+  try {
+    const d = await postJSON("/api/wifi/scan", {});
+    state.nearby = d.networks || [];
+    if (msg) {
+      msg.textContent = d.ok
+        ? `${d.count} redes · ${fmtWhen(d.scanned_at)}`
+        : (d.error || "falló");
+    }
+    if (!d.ok) toast(d.error || "Escaneo Wi‑Fi falló", "warn");
+    else toast(`${d.count} redes cercanas`, "info");
+    renderNearby();
+    // refrescar historial tras persist
+    refresh();
+  } catch (e) {
+    if (msg) msg.textContent = "error";
+    toast("No se pudo escanear (¿Termux:API + permisos?)", "warn");
+  }
+}
+
+async function refreshLink() {
+  try {
+    const d = await getJSON("/api/wifi/link");
+    state.link = d;
+    renderLinkBox();
+    renderStation();
+  } catch (e) {
+    /* opcional */
+  }
 }
 
 function renderHotHosts() {
@@ -305,6 +405,8 @@ function paint() {
   renderOps();
   renderRisk();
   renderStation();
+  renderLinkBox();
+  renderNearby();
   renderHotHosts();
   renderHosts();
   renderHeat();
@@ -501,6 +603,12 @@ function boot() {
     const b = $("#btnScan"); b.disabled = true; b.textContent = "…";
     try { await postJSON("/api/scan"); toast("Escaneo lanzado", "info"); } catch (e) {}
     setTimeout(() => { b.disabled = false; b.textContent = "Escanear"; refresh(); }, 1800);
+  });
+  $("#btnWifiScan")?.addEventListener("click", async () => {
+    const b = $("#btnWifiScan");
+    if (b) { b.disabled = true; }
+    try { await scanNearby(); await refreshLink(); }
+    finally { if (b) b.disabled = false; }
   });
   $("#btnExport").addEventListener("click", () => {
     location.href = "/export/hosts.csv?token=" + encodeURIComponent(token());
