@@ -1,28 +1,27 @@
 # WiFi-ZERO
 
-Vigilancia continua de **tu red local** — **v4.2** (híbrido).
+Vigilancia continua de **tu red local**. Versión 4.2, pensada para un PC o una Raspberry Pi con un panel en el teléfono.
 
-**Arquitectura recomendada:** un **PC o Raspberry Pi** corre el cerebro
-(`python3 -m core`: ARP/LAN + panel HTTP). El **teléfono solo abre el panel**
-como PWA contra la IP LAN del Pi. Termux en el móvil queda como runtime
-**opcional/legado**.
+[![CI](https://github.com/NickPro5677/wifi-zero/actions/workflows/ci.yml/badge.svg)](https://github.com/NickPro5677/wifi-zero/actions/workflows/ci.yml)
+[![Licencia: MIT](https://img.shields.io/badge/licencia-MIT-blue.svg)](LICENSE)
 
-Todo **100 % Python stdlib** (cero `pip install`).
+Todo corre con la **biblioteca estándar de Python**. No hace falta `pip install`.
 
-> **Ámbito (imprescindible):** este proyecto es para **tu propia red** o con
-> autorización. Sin root **no hay** monitor mode, deauth ni lectura del tráfico
-> ajeno. Ver `docs/ETHICS.md`.
+> **Ámbito:** este proyecto es para **tu propia red**, o con autorización. Sin root no hay modo monitor, deauth ni lectura del tráfico ajeno. Ver [docs/ETHICS.md](docs/ETHICS.md).
 
----
+## Para qué sirve
 
-## Qué aporta en una línea
-Inventario de hosts (ARP + OUI), puertos/servicios, scoring de riesgo,
-whitelist/watchlist y un **panel instalable** en el teléfono. El escaneo Wi‑Fi
-cercano vía Termux:API es **opcional**; el monitoreo primario es LAN desde el Pi.
+Inventario de hosts (ARP + fabricante), puertos y servicios, puntuación de riesgo, listas blanca y de vigilancia, y un panel instalable en el teléfono.
 
-## Rápido — Pi / Debian / Ubuntu (recomendado)
+La arquitectura recomendada: un **PC o Raspberry Pi** corre el cerebro (`python3 -m core`: ARP/LAN + panel HTTP). El teléfono solo abre el panel como PWA contra la IP de la red local. Termux en el móvil queda como runtime opcional. El escaneo de redes Wi-Fi cercanas (Termux:API) es opcional; el monitoreo principal es la LAN desde el Pi.
 
-Guía completa: **[`docs/INSTALL.md`](docs/INSTALL.md)**.
+No hay demo pública: corre en tu red.
+
+## Cómo usarlo
+
+Guía completa: [docs/INSTALL.md](docs/INSTALL.md).
+
+### En un Pi, Debian o Ubuntu (recomendado)
 
 ```sh
 sudo apt update
@@ -40,78 +39,86 @@ export WZ_SESSION_SECRET="$(cat ~/.wifi-zero/session_secret)"
 # (unidad de ejemplo: deploy/wifi-zero.service)
 ```
 
-1. En el Pi, anota la IP LAN (`ip -br addr`).
-2. En el **teléfono**, abre `http://<IP-del-Pi>:8788` → wizard `/setup`.
-3. Elige bind **`0.0.0.0`** (LAN) en red de confianza.
-4. «Añadir a pantalla de inicio» (PWA).
+1. En el Pi, anota la IP de la red local (`ip -br addr`).
+2. En el teléfono, abre `http://<IP-del-Pi>:8788` y sigue el asistente `/setup`.
+3. Elige bind **`0.0.0.0`** solo en una red de confianza.
+4. Añade la página a la pantalla de inicio (PWA).
 
-Bind por defecto en config: `127.0.0.1` (seguro). En el modelo híbrido el
-wizard recomienda `0.0.0.0` para el teléfono — ver `docs/SECURITY.md`
-(Bearer por HTTP en claro en la Wi‑Fi).
+Por defecto el panel escucha en `127.0.0.1` (más seguro). En el modelo híbrido el asistente recomienda `0.0.0.0` para que el teléfono pueda entrar. En ese caso el token viaja por HTTP en claro dentro de la Wi-Fi: ver [docs/SECURITY.md](docs/SECURITY.md).
 
-## Termux (opcional / legado)
+### Termux (opcional)
 
-Sigue funcionando si quieres el cerebro en el teléfono. Ver sección Termux
-en `docs/INSTALL.md`. El escaneo de redes cercanas (`termux-wifi-scaninfo`)
-solo aplica ahí.
+Sigue funcionando si quieres el cerebro en el teléfono. Ver la sección Termux en [docs/INSTALL.md](docs/INSTALL.md). El escaneo de redes cercanas (`termux-wifi-scaninfo`) solo aplica ahí.
 
-## Panel (v4)
+## Panel
 
-- **First-run** `/setup`: usuario, contraseña, bind (LAN para Pi+PWA), monitor.
-- **Login** (scrypt, tokens HMAC, 30 min, throttling, CSRF).
-- **Resumen / Hosts / Radio / Topología / Eventos / Whitelist**.
-- **Radio**: inventario LAN es primario; «Escanear cercanas» es opcional
-  (Termux:API). Ver `docs/ETHICS.md`.
-- **Ajustes / Sistema**: intervalos, pushes, control, checks, backup, PWA.
-- **SSE** en vivo, export CSV, atajos `/` `s` `1–7` `Esc`.
+- Primera vez (`/setup`): usuario, contraseña, bind (LAN para Pi + PWA) y monitor.
+- Inicio de sesión: scrypt, tokens HMAC (30 min), límite de intentos y CSRF.
+- Vistas: Resumen, Hosts, Radio, Topología, Eventos y Whitelist.
+- Radio: el inventario LAN es lo principal; «Escanear cercanas» es opcional (Termux:API). Ver [docs/ETHICS.md](docs/ETHICS.md).
+- Ajustes y Sistema: intervalos, avisos, control, comprobaciones, copias y PWA.
+- Eventos en vivo (SSE), exportar CSV y atajos `/`, `s`, `1–7`, `Esc`.
 
 ## Qué rastrea
 
 | Módulo | Técnica | Salida |
 |---|---|---|
-| Hosts | ARP (`ip neigh`) + TCP | IP, MAC, OUI, estado, 1ª/última |
-| Servicios | TCP + `nmap -sV` opcional | puerto, servicio, versión |
-| Wi-Fi (opcional) | Termux:API scaninfo/connectioninfo | SSID, BSSID, cifrado, canal, RSSI… |
-| Sospechosos | reglas + cooldown + mute | host nuevo, spoof, LAA, conflicto IP, offline, AP rogue/open/twin, downgrade, gateway MITM, puerto nuevo |
-| Riesgo | scoring 0–100 + historial | hosts/APs + serie `scores` |
+| Hosts | ARP (`ip neigh`) + TCP | IP, MAC, fabricante (OUI), estado, primera y última vez |
+| Servicios | TCP + `nmap -sV` opcional | Puerto, servicio, versión |
+| Wi-Fi (opcional) | Termux:API `scaninfo` / `connectioninfo` | SSID, BSSID, cifrado, canal, RSSI… |
+| Sospechosos | Reglas, espera y silencio | Host nuevo, spoof, dirección aleatoria, conflicto de IP, equipo caído, AP falso/abierto/gemelo, downgrade, MITM en la puerta de enlace, puerto nuevo |
+| Riesgo | Puntuación 0–100 e historial | Hosts y APs, serie `scores` |
 
-## Configuración
+La configuración se edita en el panel (Ajustes) o en `config.json`. Ejemplo: `config.example.json`.
 
-Editable en el panel (Ajustes) o en `config.json`. Ejemplo: `config.example.json`.
+## Estructura de archivos
 
-## Makefile
+```text
+wifi-zero/
+├── core/        # Supervisor, configuración, base de datos, monitor y servidor HTTP
+├── scanner/     # Barrido de LAN y, opcional, de Wi-Fi
+├── panel/       # PWA: inicio, setup, login, app.js, service worker y manifiesto
+├── deploy/      # Unidad systemd de ejemplo (wifi-zero.service)
+├── scripts/     # Contraseña (legado), watchdog y copias
+├── tests/       # Pruebas con unittest, sin red
+├── docs/        # INSTALL, ARCHITECTURE, RULES, SECURITY, ETHICS
+└── start_all.sh # Arranca python3 -m core
+```
+
+## Tecnologías
+
+- Python 3, solo biblioteca estándar
+- SQLite
+- Panel en HTML, CSS y JavaScript (PWA)
+- `nmap` e `iproute2` en el sistema (opcionales según la función)
+- Termux:API, solo si se escanean redes cercanas desde el teléfono
+
+## Desarrollo
 
 ```sh
 make test      # unit tests (sin red)
-make check     # healthcheck del stack
-make run/stop
+make check     # comprobación del conjunto
+make run       # ./start_all.sh
+make stop
 make report
 make backup
 ```
 
-## Estructura
-
-```
-wifi-zero/
-├── core/        supervisor · runtime · config · db · monitor · server · …
-├── scanner/     lan_scan · wifi_track (opcional)
-├── panel/       PWA (index, setup, login, app.js, sw.js, manifest)
-├── deploy/      wifi-zero.service (systemd)
-├── scripts/     set_password (legado) · watchdog · backup
-├── tests/
-├── docs/        INSTALL · ARCHITECTURE · RULES · SECURITY · ETHICS
-└── start_all.sh → python3 -m core
-```
-
-## Dev
+También:
 
 ```sh
 python3 -m unittest discover -s tests -q
-python3 -m core --no-monitor   # solo panel
+python3 -m core --no-monitor   # solo el panel
 ```
 
-CI usa el mismo `unittest` (sin `pip install`).
+La CI usa el mismo `unittest` (sin `pip install`).
 
----
-Más: `docs/INSTALL.md`, `docs/ARCHITECTURE.md`, `docs/RULES.md`,
-`docs/SECURITY.md`, `docs/ETHICS.md`.
+Más detalle: [docs/INSTALL.md](docs/INSTALL.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/RULES.md](docs/RULES.md), [docs/SECURITY.md](docs/SECURITY.md) y [docs/ETHICS.md](docs/ETHICS.md).
+
+## Estado
+
+Activo. El código en `main` corresponde a la v4.2 (cerebro en Pi o PC, teléfono como PWA). No hay *releases* publicadas ni issues abiertos. Historial en [CHANGELOG.md](CHANGELOG.md).
+
+## Licencia
+
+Distribuido bajo la licencia [MIT](LICENSE).
